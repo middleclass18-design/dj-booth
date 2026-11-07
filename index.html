@@ -160,6 +160,14 @@ canvas.platter:active{cursor:grabbing}
 .auto-info b{color:var(--fg);font-weight:600}
 .fx-flash{color:var(--fx);font-weight:600}
 .auto-opts{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mc-opts{flex-basis:100%;min-width:0}
+.mc-opts select{min-width:0;max-width:100%}
+#mcVoice{max-width:min(100%,220px)}
+.mc-shout{font-family:var(--body);font-size:13px;color:var(--fg);background:var(--raised);border:1px solid var(--line);border-radius:7px;padding:7px 10px;min-width:0;flex:1 1 200px;max-width:300px}
+.mc-shout:focus-visible{outline:2px solid var(--fx);outline-offset:2px}
+#mcBtn{--c:var(--fx)}
+.mc-say{display:block;font-style:italic;color:var(--fx);margin-top:2px}
+.load .btn[data-act="next"]{--c:var(--fx)}
 #autoFx{--c:var(--fx)}
 select{font-family:var(--body);font-size:13px;color:var(--fg);background:var(--raised);border:1px solid var(--line);border-radius:7px;padding:7px 10px}
 select:focus-visible{outline:2px solid var(--fx);outline-offset:2px}
@@ -243,6 +251,17 @@ kbd{font-family:var(--mono);font-size:11.5px;color:var(--fg);background:var(--ra
       <button class="btn sm" id="autoFx" aria-pressed="true" title="Let Auto DJ drop horns, risers, echoes and filter moves">Sound FX</button>
       <button class="btn sm" id="autoMix" disabled title="Start the next transition at the coming phrase">Mix now</button>
       <button class="btn sm" id="bgBtn" aria-pressed="false" title="Keep the music going when you switch apps or lock your phone. Turn off if you hear nothing.">Background play</button>
+    </div>
+    <div class="auto-opts mc-opts">
+      <button class="btn sm" id="mcBtn" aria-pressed="true" title="A DJ voice talks over the music and introduces each song before it plays">DJ voice</button>
+      <label class="lbl" for="mcOften">Talks</label>
+      <select id="mcOften"><option value="1">Every song</option><option value="0.65">Most songs</option><option value="0.35">Now and then</option></select>
+      <label class="lbl" for="mcVoice">Voice</label>
+      <select id="mcVoice"><option value="">Best available</option></select>
+      <input id="mcShout" class="mc-shout" type="text" maxlength="80" placeholder="Shout-out, e.g. Kaison, happy 1st birthday" aria-label="Shout-out the DJ says now and then">
+      <button class="btn sm" id="mcTest">Hear it</button>
+      <label class="lbl" for="autoLen">Songs</label>
+      <select id="autoLen"><option value="1">DJ length</option><option value="1.8">Play longer</option><option value="99">Whole song</option></select>
     </div>
     <ol class="auto-log" id="autoLog" aria-label="Transitions so far"></ol>
   </section>
@@ -1494,6 +1513,7 @@ padAdd.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' '
 const NOT_WANTED = /reggaet|latin|dembow|perreo|bachata|cumbia|salsa|dubstep|riddim dubstep|brostep/i;
 const crate = TRACKS.filter(t => !NOT_WANTED.test(t.genre)).map(t => ({ ...t, loops: true, grid: true, offset: 0, buffer: null, peaks: null }));
 const crateEl = $('#crate');
+const playQueue = [];   // songs you picked with Play next, in order
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function renderCrate() {
   crateEl.innerHTML = crate.map((t, i) => {
@@ -1507,7 +1527,7 @@ function renderCrate() {
       <td class="num">${t.bpm ? (t.user ? '≈' : '') + t.bpm.toFixed(1) : '—'}</td>
       <td class="key">${esc(t.key)} ${t.keyName ? `<small>${esc(t.keyName)}</small>` : ''}</td>
       <td class="num">${t.failed ? '<span class="pending">can’t read</span>' : ready ? (len ? fmtShort(len) : '—') : `<span class="pending">${t.file ? 'reading…' : 'pressing…'}</span>`}</td>
-      <td><div class="load"><button class="btn sm" data-deck="A" data-i="${i}" ${ready ? '' : 'disabled'}>Deck A</button><button class="btn sm" data-deck="B" data-i="${i}" ${ready ? '' : 'disabled'}>Deck B</button></div></td>
+      <td><div class="load"><button class="btn sm" data-deck="A" data-i="${i}" ${ready ? '' : 'disabled'}>Deck A</button><button class="btn sm" data-deck="B" data-i="${i}" ${ready ? '' : 'disabled'}>Deck B</button><button class="btn sm" data-act="next" data-i="${i}" ${ready ? '' : 'disabled'} title="Auto DJ plays this one next">${playQueue.includes(t) ? `Queued ${playQueue.indexOf(t) + 1}` : 'Play next'}</button></div></td>
     </tr>`;
   }).join('');
   populateGenres();
@@ -1525,6 +1545,15 @@ crateEl.addEventListener('change', e => {
   if (s.dataset.style !== undefined) setSongStyle(t, s.value); else { t.era = s.value; renderCrate(); }
 });
 crateEl.addEventListener('click', e => {
+  const q = e.target.closest('button[data-act="next"]');
+  if (q) {
+    // your own picks: Auto DJ plays queued songs in order before choosing its own
+    const t = crate[+q.dataset.i]; if (!t) return;
+    const at = playQueue.indexOf(t);
+    if (at >= 0) playQueue.splice(at, 1); else { playQueue.push(t); toast(`“${t.title}” is queued. Auto DJ plays it ${playQueue.length === 1 ? 'next' : 'after ' + (playQueue.length - 1) + ' more'}.`); }
+    if (A.on && !A.launched && !A.preparing && A.next && playQueue[0] && A.next.track !== playQueue[0]) A.next = null;
+    renderCrate(); return;
+  }
   const b = e.target.closest('button[data-deck]'); if (!b) return;
   const d = b.dataset.deck === 'A' ? deckA : deckB, t = crate[+b.dataset.i];
   resume(); sendToDeck(d, t);
@@ -1785,6 +1814,104 @@ audRes.addEventListener('click', e => {
   resume(); sendToDeck(b.dataset.deck === 'A' ? deckA : deckB, t);
 });
 
+/* ---------- DJ voice (the MC) ---------- */
+// The phone's own text-to-speech talks over the music, like a DJ on the mic: it names the next song and the artist,
+// and throws in a line that fits the style. The music dips while it talks.
+const synth = window.speechSynthesis || null;
+const MC = { on: true, often: 1, shout: '', voiceName: '', last: [], speaking: false, line: '', lineUntil: 0 };
+try { const s = JSON.parse(localStorage.getItem('tdb-mc') || '{}'); Object.assign(MC, { on: s.on !== false, often: +s.often || 1, shout: s.shout || '', voiceName: s.voiceName || '' }); } catch (e) {}
+function mcSave() { try { localStorage.setItem('tdb-mc', JSON.stringify({ on: MC.on, often: MC.often, shout: MC.shout, voiceName: MC.voiceName })); } catch (e) {} }
+const pickOne = a => a[Math.floor(Math.random() * a.length)];
+// "03 - Murder She Wrote (Remastered).flac" -> "Murder She Wrote"
+function sayable(s) {
+  return String(s || '').replace(/\.(flac|mp3|m4a|wav|ogg|aac|opus)$/i, '').replace(/^\d{1,3}\s*[-._)]\s*/, '')
+    .replace(/\s*[\(\[][^)\]]*(feat|ft\.|remaster|explicit|clean|version|edit|radio|official|audio|video|lyric|prod\.)[^)\]]*[\)\]]/gi, '')
+    .replace(/[_]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+function featOf(t) {
+  const m = /\b(?:feat\.?|ft\.?|featuring)\s+([^)\]]+)/i.exec(`${t.title || ''} ${t.artist || ''}`);
+  return m ? sayable(m[1]).replace(/[)\]]+$/, '') : '';
+}
+function sayArtist(t) { return sayable((t.artist || '').split(/\s+(?:feat\.?|ft\.?|featuring)\s+/i)[0]); }
+// for spacing artists out: "Beenie Man feat. Ms. Thing" and "Beenie Man" count as the same artist
+function artistKey(t) { return sayArtist(t).toLowerCase().split(/\s*(?:,|\bx\b|&|\band\b)\s*/)[0].trim(); }
+const MC_OPEN = ['Next one is gonna feel nice.', 'Ooh, you are gonna like this one.', 'Hold tight, hold tight.', 'Don\'t go nowhere.', 'Keep it locked.',
+  'Okay, okay, okay.', 'Let\'s keep it moving.', 'Right about now...', 'I see you on the dance floor.', 'Ay, turn me up a little.'];
+const MC_NAME = ['This is {a}, {t}{f}!', '{a}{f}! {t}!', 'Here comes {t}, by {a}{f}.', 'Coming up, {a}{f} with {t}.', 'Make some noise for {a}! {t}!', 'Your DJ is playing {t}, from {a}{f}.'];
+const MC_NAME_NOART = ['Here comes {t}!', 'This one is called {t}.', 'Coming up, {t}.'];
+const MC_STYLE = {
+  Dancehall: ['Selecta! Wheel it up!', 'Dancehall massive, make some noise!', 'Big tune! Gyal dem, where you at?', 'If you can\'t dance to this one, sit down and hold the drinks.',
+    'Straight from Jamaica, no passport needed.', 'Ladies, this one is for you. Wine it up!', 'Pull up, selecta, pull up!', 'Big up yourself if you know every word!'],
+  Reggae: ['Lighters up! Or phone flashlights, whatever you got.', 'One love. Feel it.', 'Nice and easy, let the bass carry you.', 'Roots and culture, pure vibes.',
+    'Sway with somebody. Anybody. Even your auntie.', 'This one is for the soul.'],
+  'Hip-hop': ['Hands in the air!', 'Heads nodding, let\'s go!', 'Bass check, one two!', 'You know every word to this, don\'t lie.', 'Bounce with me!'],
+  'R&B': ['Slow it down a little. Grab somebody you like.', 'Smooth, smooth. Two step if you got it.', 'Fellas, this is your chance. Don\'t mess it up.', 'Ladies, this one is for you.', 'Pure vibes, pure love.'],
+  Pop: ['Everybody knows this one, don\'t pretend you don\'t.', 'Sing it loud, nobody is judging. Okay, I am judging a little.', 'Big chorus coming, get ready!', 'Dance floor, this one is yours!'],
+  Dance: ['Hands up!', 'Let\'s get this party jumping!', 'Keep that energy up!', 'Feet don\'t fail me now!']
+};
+const MC_OLD = ['We are going way back to {y}!', 'Old school! If your knees hurt on this one, you are the right age.', 'A proper throwback, from {y}.', 'Classic! Back when the beats were hard and the jeans were baggy.'];
+const MC_NEW = ['Fresh one! Turn it up.', 'Brand new vibes.', 'This one is hot right now.'];
+const MC_B2B = ['Back to back {a}, because one wasn\'t enough!', 'More {a}! You asked, I deliver.', '{a} again! I can\'t help it.'];
+const MC_SHOUT = ['Big up {s}!', 'This one goes out to {s}!', 'Shout out to {s}!'];
+const MC_WELCOME = ['Welcome, welcome! Your DJ is in the building.', 'Good people, let\'s get this party started!', 'Is everybody ready? Let\'s go!'];
+const MC_LOOP = ['Keep it moving, fresh beat coming in.', 'Switching it up!', 'New vibe, let\'s go.'];
+function fresh(list) {
+  // avoid saying the same line twice in a short while
+  const ok = list.filter(l => !MC.last.includes(l)), l = pickOne(ok.length ? ok : list);
+  MC.last.push(l); if (MC.last.length > 14) MC.last.shift();
+  return l;
+}
+function fill(line, t) {
+  const f = featOf(t), y = t.year && t.year > 1950 ? String(t.year) : 'back in the day';
+  return line.replace('{a}', sayArtist(t)).replace('{t}', sayable(t.title)).replace('{f}', f ? ', featuring ' + f : '').replace('{y}', y).replace('{s}', MC.shout.trim());
+}
+function mcLine(t, prev, opening) {
+  if (t.loops) return fresh(opening ? MC_WELCOME : MC_LOOP);
+  const parts = [], st = styleName(t), art = sayArtist(t);
+  if (opening) parts.push(fresh(MC_WELCOME));
+  if (!opening && prev && !prev.loops && art && artistKey(prev) === artistKey(t)) parts.push(fill(fresh(MC_B2B), t));
+  else if (!opening && Math.random() < 0.55) parts.push(fresh(MC_OPEN));
+  parts.push(fill(fresh(art ? MC_NAME : MC_NAME_NOART), t));
+  const r = Math.random();
+  if (t.era === 'Old school' && /^(Hip-hop|R&B|Dancehall|Reggae)$/.test(st) && r < 0.4) parts.push(fill(fresh(MC_OLD), t));
+  else if (t.era === 'New' && r < 0.15) parts.push(fresh(MC_NEW));
+  else if (MC_STYLE[st] && r < 0.8) parts.push(fresh(MC_STYLE[st]));
+  if (MC.shout.trim() && Math.random() < 0.3) parts.push(fill(fresh(MC_SHOUT), t));
+  return parts.join(' ');
+}
+function mcVoice() {
+  if (!synth) return null;
+  const vs = synth.getVoices().filter(v => /^en/i.test(v.lang));
+  if (MC.voiceName) { const v = vs.find(v => v.name === MC.voiceName); if (v) return v; }
+  // a Jamaican or Caribbean English voice if the phone has one, then natural-sounding UK or US voices
+  const rank = v => (/en-JM/i.test(v.lang) ? 50 : 0) + (/natural|neural|premium|enhanced/i.test(v.name) ? 20 : 0) + (/google/i.test(v.name) ? 8 : 0)
+    + (/male|daniel|guy|ryan|thomas|aaron|arthur|fred/i.test(v.name) && !/female/i.test(v.name) ? 6 : 0) + (/en-GB/i.test(v.lang) ? 4 : /en-US/i.test(v.lang) ? 3 : 0) + (v.localService ? 1 : 0);
+  return vs.sort((a, b) => rank(b) - rank(a))[0] || null;
+}
+const DUCK = 0.38;   // how far the music dips under the voice
+function mcSay(text) {
+  if (!synth || !text) return false;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text), v = mcVoice();
+  if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
+  u.rate = 1.04; u.pitch = 0.92; u.volume = 1;
+  let safety = 0;
+  const up = () => {
+    clearTimeout(safety); if (!MC.speaking) return;
+    MC.speaking = false; masterBus.gain.cancelScheduledValues(ctx.currentTime); masterBus.gain.setTargetAtTime(0.75, ctx.currentTime, 0.35);
+  };
+  u.onstart = () => { MC.speaking = true; masterBus.gain.cancelScheduledValues(ctx.currentTime); masterBus.gain.setTargetAtTime(0.75 * DUCK, ctx.currentTime, 0.12); };
+  u.onend = u.onerror = up;
+  safety = setTimeout(up, 4000 + text.length * 120);   // never leave the music dipped if the phone forgets to say it finished
+  MC.line = text; MC.lineUntil = performance.now() + 2500 + text.length * 75;
+  synth.speak(u);
+  return true;
+}
+// phones only allow speech after a tap, so the Auto DJ and Hear it buttons wake the voice up
+function mcUnlock() { if (!synth) return; try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); } catch (e) {} }
+function mcStop() { if (synth) synth.cancel(); if (MC.speaking) { MC.speaking = false; masterBus.gain.setTargetAtTime(0.75, ctx.currentTime, 0.2); } }
+const speakLen = s => 0.8 + s.split(/\s+/).length * 0.37;   // rough seconds it takes to say a line
+
 /* ---------- auto DJ ---------- */
 // How each genre likes to be mixed: 'four' = four-on-the-floor, long blends are safe
 const PROFILES = {
@@ -1841,7 +1968,8 @@ const FX_NAMES = { filterDip: 'Filter dip', echoThrow: 'Echo throw', horn: 'Air 
 const planName = p => PLAN_NAMES[p.type === 'blend' ? p.mode : p.type];
 
 const A = { on: false, fx: true, genre: 'all', cur: null, next: null, plan: null, target: 0, curStart: 0, launched: false,
-  ramps: [], events: [], history: [], recent: [], lastFxBar: -1, fxNote: null, setStart: 0 };
+  ramps: [], events: [], history: [], recent: [], lastFxBar: -1, fxNote: null, setStart: 0, played: new Set(), len: 1, mcFor: null };
+try { A.len = +localStorage.getItem('tdb-len') || 1; } catch (e) {}
 const autoPanel = $('#autoPanel'), autoBtn = $('#autoBtn'), autoNow = $('#autoNow'), autoNext = $('#autoNext');
 const autoGenre = $('#autoGenre'), autoFx = $('#autoFx'), autoMix = $('#autoMix'), autoLog = $('#autoLog');
 
@@ -1868,15 +1996,27 @@ function setEcho(on, t, delay) {
 function noteFx(kind, t) { schedule(t, () => { A.fxNote = { text: FX_NAMES[kind], until: performance.now() + 3000 }; renderAuto(); }); }
 
 function pickNext(cur) {
+  // songs you queued with Play next always come first, in order
+  while (playQueue.length && (playQueue[0] === cur || playQueue[0].failed)) playQueue.shift();
+  if (playQueue.length) return playQueue[0];
   const all = candidates();
   let pool = all.filter(t => t !== cur);
   if (!pool.length) pool = all;
   if (!pool.length) return null;
+  // every song gets a turn before any song comes round again
+  if (pool.every(t => A.played.has(t))) A.played.clear();
+  const recentArtists = A.recent.slice(-3).filter(t => !t.loops).map(artistKey).filter(Boolean);
   let best = null, bs = -Infinity;
   for (const t of pool) {
     // harmonic (Camelot) neighbours and close tempos score higher; recent tracks lose points
     let s = -1.6 * keyDist(cur.key, t.key) - tempoGap(cur.bpm, t.bpm) / 5 + Math.random() * 3.5;
     const ri = A.recent.lastIndexOf(t); if (ri >= 0) s -= 4 + 2 * ri;
+    if (A.played.has(t)) s -= 9;
+    if (!t.loops) {
+      // space artists out, but now and then a DJ runs two by the same artist back to back
+      const k = artistKey(t);
+      if (k && recentArtists.includes(k)) s -= k === artistKey(cur) ? (Math.random() < 0.15 ? -1 : 6) : 4;
+    }
     if (t.loops) { if (A.genre === 'all' && t.genre !== cur.genre) s += 1.5; }
     else if (A.block) {
       // play a block of one style (say four dancehall tunes), then switch to another, like a DJ reading the room
@@ -1919,7 +2059,7 @@ function computeTarget(cur, plan) {
   } else {
     const endBar = Math.floor((cur.dur - grid(cur).off) / barBuf);
     target = plan.type === 'blend' ? endBar - plan.bars - 1 : plan.type === 'fade' ? endBar - 3 : endBar - 1;
-    const play = (songStyle(tr) || { play: 150 }).play;
+    const play = (songStyle(tr) || { play: 150 }).play * A.len;   // "Play longer" and "Whole song" stretch this
     target = Math.min(target, A.curStart + Math.max(8, Math.round(play / barBuf / 8) * 8));
     if (target < minT) target = minT;
   }
@@ -1961,6 +2101,7 @@ function launch() {
     const L = plan.bars, half = tT + L / 2 * bs, end = tT + L * bs;
     inn.ctl.lo.set(-1); inn.ctl.hi.set(-0.4); inn.ctl.mid.set(0); inn.ctl.filter.set(0); inn.ctl.vol.set(0);
     inn.playAt(tT, startPos);
+    mcLate(out, inn, tT);
     rampCtl(inn.ctl.vol, 0.85, tT, tT + L / 2 * bs * 0.75);
     rampCtl(inn.ctl.hi, 0, tT, half);
     rampCtl(out.ctl.lo, -1, half - bs / 4, half);   // swap the basslines on the downbeat
@@ -1977,6 +2118,7 @@ function launch() {
       const fb = 2 * bs;
       inn.setTempo(0, false); neutral(inn); inn.ctl.vol.set(0);
       inn.playAt(tT, startPos);
+      mcLate(out, inn, tT);
       rampCtl(inn.ctl.vol, 0.85, tT, tT + fb);
       rampCtl(out.ctl.filter, -0.6, tT, tT + fb);
       rampCtl(out.ctl.vol, 0, tT, tT + fb);
@@ -1989,6 +2131,7 @@ function launch() {
     // 'cut': the next song simply slams in on the one
     inn.setTempo(0, false); neutral(inn); inn.ctl.vol.set(0.85);
     inn.playAt(tT, startPos);
+    mcLate(out, inn, tT);
     out.fader.gain.setValueAtTime(0, tT);
     schedule(tT, () => out.ctl.vol.set(0));
     let drop = null;
@@ -2006,6 +2149,8 @@ function finish(out, inn, plan) {
   A.history.push(`${out.track.title} → ${inn.track.title} · ${planName(plan)}`);
   if (A.history.length > 6) A.history.shift();
   A.recent.push(inn.track); if (A.recent.length > 4) A.recent.shift();
+  A.played.add(inn.track);
+  if (playQueue[0] === inn.track) { playQueue.shift(); renderCrate(); }
   A.cur = inn; A.next = null; A.plan = null; A.launched = false; A.curStart = 0; A.lastFxBar = -1; A.pulled = false;
   const st = styleName(inn.track);
   if (!A.block || A.block.style !== st) A.block = { style: st, n: 1, len: 3 + Math.floor(Math.random() * 3) }; else A.block.n++;
@@ -2069,7 +2214,25 @@ function autoStep() {
     })) { noteFx('pullUp', ctx.currentTime); return; }
   }
   if (A.fx) maybeFx(cur, bars);
+  mcMaybe(cur);
   if (bars >= A.target - preBars(A.plan) - 0.75) launch();
+}
+// The DJ talks just before the next song comes in, timed so the line ends about as the song drops
+function mcMaybe(cur) {
+  const t = A.next && A.next.track;
+  if (!MC.on || !synth || !t || A.launched || A.mcFor === t) return;
+  if (A.mcRollFor !== t) { A.mcRollFor = t; A.mcSkip = Math.random() > MC.often; A.mcText = mcLine(t, cur.track, false); }
+  if (A.mcSkip) { A.mcFor = t; return; }
+  const secs = timeOfBar(cur, A.target - preBars(A.plan)) - ctx.currentTime;
+  if (secs <= speakLen(A.mcText) + 1 && secs > 0.8) { A.mcFor = t; mcSay(A.mcText); }
+}
+// if there was no time to talk before the mix (say after Mix now), the DJ talks over the new song's intro instead
+function mcLate(out, inn, tT) {
+  const t = inn.track;
+  if (!MC.on || !synth || A.mcFor === t || (A.mcRollFor === t && A.mcSkip)) return;
+  A.mcFor = t;
+  const text = A.mcRollFor === t ? A.mcText : mcLine(t, out.track, false);
+  schedule(tT + 0.4, () => mcSay(text));
 }
 function tick() {
   const now = ctx.currentTime;
@@ -2090,7 +2253,7 @@ async function setAuto(on) {
   A.ramps = []; A.events = []; A.block = null; A.pulled = false;
   if (!on) {
     A.on = false; A.cur = null; A.next = null; A.plan = null; A.launched = false; A.preparing = false;
-    setEcho(false, ctx.currentTime); renderAuto(); return;
+    mcStop(); setEcho(false, ctx.currentTime); renderAuto(); return;
   }
   if (A.starting) return;
   resume();
@@ -2105,7 +2268,8 @@ async function setAuto(on) {
       : crate.some(t => t.file) ? 'Your songs are still being read. Try again in a moment.' : 'The loops are still being made. Try again in a moment.');
     renderAuto(); return;
   }
-  Object.assign(A, { on: true, setStart: ctx.currentTime, history: [], recent: [], fxNote: null, launched: false, next: null, plan: null, lastFxBar: -1 });
+  Object.assign(A, { on: true, setStart: ctx.currentTime, history: [], recent: [], fxNote: null, launched: false, next: null, plan: null, lastFxBar: -1, mcFor: null, mcRollFor: null });
+  A.played.clear();
   for (const d of decks) { d.synced = false; if (d.loop) { d.commit(); d.loop = null; if (d.src) d.applyLoop(d.src); } d.ui(); }
   xfCtl.set(0.5); setEcho(false, ctx.currentTime);
   let cur = masterDeck();
@@ -2114,15 +2278,18 @@ async function setAuto(on) {
     cur = deckA;
     A.starting = true; renderAuto();
     let first = null;
-    for (const t of shuffle(ready).slice(0, 4)) { if (await loadEntry(deckA, t)) { first = t; break; } }
+    const q = playQueue.filter(t => !t.failed && isReady(t));
+    for (const t of [...q.slice(0, 1), ...shuffle(ready).slice(0, 4)]) { if (await loadEntry(deckA, t)) { first = t; break; } }
+    if (first && playQueue[0] === first) { playQueue.shift(); renderCrate(); }
     A.starting = false;
     if (!first || !A.on) { A.on = false; renderAuto(); return; }
     neutral(deckA); deckA.setTempo(0, false); deckA.ctl.vol.set(0.85);
     deckA.seek(first.grid ? deckA.offset : 0); deckA.play();
   }
   if (cur.other.playing) cur.other.pause();
-  A.cur = cur; A.recent.push(cur.track);
+  A.cur = cur; A.recent.push(cur.track); A.played.add(cur.track);
   A.curStart = cur.track.loops ? Math.floor(barsOf(cur) / 8) * 8 : Math.floor(barsOf(cur));
+  if (MC.on) { A.mcFor = cur.track; const tr = cur.track; setTimeout(() => { if (A.on && A.cur && A.cur.track === tr) mcSay(mcLine(tr, null, true)); }, 700); }
   prepareNext(); renderAuto();
 }
 function renderAuto() {
@@ -2145,6 +2312,7 @@ function renderAuto() {
       }
     }
     if (A.fxNote && performance.now() < A.fxNote.until) nx += ` · <span class="fx-flash">${A.fxNote.text}</span>`;
+    if (MC.line && performance.now() < MC.lineUntil) nx += `<span class="mc-say">🎤 “${esc(MC.line)}”</span>`;
     autoNext.innerHTML = nx;
   }
   const log = A.history.map(h => `<li>${esc(h)}</li>`).join('');
@@ -2166,7 +2334,35 @@ function populateGenres() {
     + AUD_GENRES.map(g => `<option value="audius:${esc(g)}">${esc(g)}</option>`).join('') + '</optgroup>';
   autoGenre.value = [...autoGenre.options].some(o => o.value === v) ? v : 'all';
 }
-autoBtn.addEventListener('click', () => setAuto(!A.on));
+autoBtn.addEventListener('click', () => { if (!A.on) mcUnlock(); setAuto(!A.on); });
+// DJ voice controls
+const mcBtn = $('#mcBtn'), mcOften = $('#mcOften'), mcVoiceSel = $('#mcVoice'), mcShout = $('#mcShout'), autoLen = $('#autoLen');
+mcBtn.setAttribute('aria-pressed', String(MC.on)); mcOften.value = String(MC.often); mcShout.value = MC.shout; autoLen.value = String(A.len);
+if (!synth) { mcBtn.disabled = true; mcBtn.title = 'This browser has no text-to-speech voice'; MC.on = false; mcBtn.setAttribute('aria-pressed', 'false'); }
+function fillVoices() {
+  if (!synth) return;
+  const vs = synth.getVoices().filter(v => /^en/i.test(v.lang));
+  const key = vs.map(v => v.name).join('|'); if (mcVoiceSel.dataset.key === key) return; mcVoiceSel.dataset.key = key;
+  mcVoiceSel.innerHTML = '<option value="">Best available</option>' + vs.map(v => `<option value="${esc(v.name)}">${esc(v.name.replace(/^(Microsoft|Google)\s+/, ''))} (${esc(v.lang)})</option>`).join('');
+  mcVoiceSel.value = vs.some(v => v.name === MC.voiceName) ? MC.voiceName : '';
+}
+if (synth) { fillVoices(); synth.addEventListener ? synth.addEventListener('voiceschanged', fillVoices) : (synth.onvoiceschanged = fillVoices); }
+mcBtn.addEventListener('click', () => { MC.on = !MC.on; mcBtn.setAttribute('aria-pressed', String(MC.on)); if (!MC.on) mcStop(); else mcUnlock(); mcSave(); });
+mcOften.addEventListener('change', () => { MC.often = +mcOften.value || 1; mcSave(); });
+mcVoiceSel.addEventListener('change', () => { MC.voiceName = mcVoiceSel.value; mcSave(); });
+mcShout.addEventListener('input', () => { MC.shout = mcShout.value; mcSave(); });
+autoLen.addEventListener('change', () => {
+  A.len = +autoLen.value || 1;
+  try { localStorage.setItem('tdb-len', String(A.len)); } catch (e) {}
+  if (A.on && A.cur && A.next && !A.launched) { A.target = computeTarget(A.cur, A.plan); renderAuto(); }
+});
+$('#mcTest').addEventListener('click', () => {
+  resume(); mcUnlock();
+  const songs = crate.filter(t => !t.loops && !t.failed);
+  const t = (A.next && A.next.track) || pickOne(songs.length ? songs : crate);
+  mcSay(mcLine(t, A.cur && A.cur.track, false)); renderAuto();
+  setTimeout(renderAuto, 50);
+});
 autoFx.addEventListener('click', () => { A.fx = !A.fx; autoFx.setAttribute('aria-pressed', String(A.fx)); });
 autoGenre.addEventListener('change', async () => {
   A.genre = autoGenre.value;
