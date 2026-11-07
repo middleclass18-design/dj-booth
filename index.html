@@ -174,6 +174,7 @@ select:focus-visible{outline:2px solid var(--fx);outline-offset:2px}
 .aud-search input:focus-visible{outline:2px solid var(--fx);outline-offset:1px}
 .aud-search .btn{--c:var(--fx)}
 .aud-status{color:var(--muted);font-size:13px}
+select.mini{font-size:12px;padding:3px 6px;margin:1px 0;max-width:110px}
 .crate-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .crate-head .sub-h{margin:0 auto 0 0}
 .sub-h{margin:6px 0 0;font-family:var(--display);font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
@@ -1392,19 +1393,25 @@ function fxWhistleAt(t0) {
     for (const x of [os, lfo]) { x.start(t); x.stop(t + len + 0.02); }
   }
 }
-// Rewind: spin the playing song backwards, then start it again from the top, like a selector pulling it up
-function fxRewind() {
-  const d = masterDeck();
-  if (!d || !d.buffer) { toast('Play a song first, then rewind it.'); return; }
-  if (A.on && A.launched) { toast('Wait until Auto DJ finishes this mix, then rewind.'); return; }
-  d.commit();
-  const buf = d.buffer, sr = buf.sampleRate, end = Math.floor(d.pos * sr), len = Math.min(end, Math.floor(3 * sr));
-  if (len < sr * 0.3) { toast('The song has only just started.'); return; }
+// the last few seconds before sample `end`, backwards, for rewinds and spinbacks
+function reversedTail(buf, end, secs) {
+  const sr = buf.sampleRate, len = Math.min(end, Math.floor(secs * sr));
+  if (len < sr * 0.2) return null;
   const rb = ctx.createBuffer(buf.numberOfChannels, len, sr);
   for (let c = 0; c < buf.numberOfChannels; c++) {
     const src = buf.getChannelData(c), dst = rb.getChannelData(c);
     for (let i = 0; i < len; i++) dst[i] = src[end - 1 - i];
   }
+  return rb;
+}
+// Rewind: spin the playing song backwards, then start it again from the top, like a selector pulling it up.
+// `after` runs when the song restarts (Auto DJ fires a siren or gunshots there).
+function fxRewind(d = masterDeck(), after) {
+  if (!d || !d.buffer) { toast('Play a song first, then rewind it.'); return false; }
+  if (A.on && A.launched) { toast('Wait until Auto DJ finishes this mix, then rewind.'); return false; }
+  d.commit();
+  const rb = reversedTail(d.buffer, Math.floor(d.pos * d.buffer.sampleRate), 3);
+  if (!rb || d.pos < 0.3) { toast('The song has only just started.'); return false; }
   const s = ctx.createBufferSource(), g = ctx.createGain(), t = ctx.currentTime + 0.02;
   s.buffer = rb;
   s.playbackRate.setValueAtTime(0.7, t); s.playbackRate.exponentialRampToValueAtTime(4, t + 1.1);
@@ -1413,9 +1420,24 @@ function fxRewind() {
   A.rewinding = true;
   d.pause(); s.start(t); s.stop(t + 1.3);
   setTimeout(() => {
-    d.playAt(ctx.currentTime + 0.02, d.track && d.track.grid ? d.offset : 0);
+    const t1 = ctx.currentTime + 0.02;
+    d.playAt(t1, d.track && d.track.grid ? d.offset : 0);
     A.rewinding = false;
+    if (after) after(t1);
   }, 1450);
+  return true;
+}
+// Spinback: the outgoing song whips backwards and stops, right before the next one drops (a hip-hop and dancehall move)
+function spinOut(d, t0, dur) {
+  d.commit();
+  const p = clamp(d.pos + (t0 - ctx.currentTime) * d.rate, 0, d.dur);
+  const rb = reversedTail(d.buffer, Math.floor(p * d.buffer.sampleRate), 2);
+  d.fader.gain.setValueAtTime(0, t0);
+  if (!rb) return;
+  const s = ctx.createBufferSource(), g = ctx.createGain(), lvl = d.fader.gain.value * d.xf.gain.value;
+  s.buffer = rb; s.playbackRate.setValueAtTime(0.9, t0); s.playbackRate.exponentialRampToValueAtTime(3.5, t0 + dur);
+  g.gain.setValueAtTime(lvl, t0); g.gain.setValueAtTime(lvl, t0 + dur * 0.6); g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+  s.connect(g); g.connect(masterBus); s.start(t0); s.stop(t0 + dur + 0.05);
 }
 $('#fxGun').addEventListener('click', () => { resume(); fxGunAt(ctx.currentTime + 0.01); });
 $('#fxBomb').addEventListener('click', () => { resume(); fxBombAt(ctx.currentTime + 0.01); });
@@ -1455,7 +1477,8 @@ function renderCrate() {
     const len = t.buffer ? t.buffer.duration : t.duration;
     return `<tr>
       <td><span class="tt">${esc(t.title)}</span>${marks}${t.artist ? `<small style="display:block;color:var(--muted)">${esc(t.artist)}</small>` : ''}</td>
-      <td>${esc(t.genre)}</td>
+      <td>${t.file ? `<select class="mini" data-style="${i}" aria-label="Style of ${esc(t.title)}">${STYLES.map(s => `<option${s === t.style ? ' selected' : ''}>${s}</option>`).join('')}</select>
+        <select class="mini" data-era="${i}" aria-label="Era of ${esc(t.title)}"><option value=""${t.era ? '' : ' selected'}>Era?</option>${ERAS.map(s => `<option${s === t.era ? ' selected' : ''}>${s}</option>`).join('')}</select>${t.year ? `<small style="display:block;color:var(--muted)">${t.year}</small>` : ''}` : esc(t.genre)}</td>
       <td class="num">${t.bpm ? (t.user ? '≈' : '') + t.bpm.toFixed(1) : '—'}</td>
       <td class="key">${esc(t.key)} ${t.keyName ? `<small>${esc(t.keyName)}</small>` : ''}</td>
       <td class="num">${t.failed ? '<span class="pending">can’t read</span>' : ready ? (len ? fmtShort(len) : '—') : `<span class="pending">${t.file ? 'reading…' : 'pressing…'}</span>`}</td>
@@ -1471,6 +1494,11 @@ for (const id of ['addSongsIn', 'addFolderIn']) {
 }
 // folder picking doesn't exist on phones; hide that button there
 if (!('webkitdirectory' in document.createElement('input')) || matchMedia('(pointer:coarse)').matches) $('#addFolder').hidden = true;
+crateEl.addEventListener('change', e => {
+  const s = e.target.closest('select'); if (!s) return;
+  const t = crate[+(s.dataset.style ?? s.dataset.era)]; if (!t) return;
+  if (s.dataset.style !== undefined) setSongStyle(t, s.value); else { t.era = s.value; renderCrate(); }
+});
 crateEl.addEventListener('click', e => {
   const b = e.target.closest('button[data-deck]'); if (!b) return;
   const d = b.dataset.deck === 'A' ? deckA : deckB, t = crate[+b.dataset.i];
@@ -1574,20 +1602,84 @@ async function analyzeAll() {
   const n = crate.filter(t => t.file && t.analyzed && !t.failed).length;
   toast(`${n} of your songs are ready. Pick “Your songs” in Auto DJ to mix them.`);
 }
-function addFiles(files) {
+/* ---------- song styles: which kind of music each song is, and when it came out ---------- */
+const STYLES = ['Dancehall', 'Reggae', 'Hip-hop', 'R&B', 'Pop', 'Dance'];
+const ERAS = ['Old school', 'New'];
+// Song tags are often wrong for Jamaican music (dancehall hits get filed under "Pop"), so known artists decide first
+const JAM_ROOTS = /bob marley|wailers|peter tosh|dennis brown|gregory isaacs|burning spear|toots|jimmy cliff|beres hammond|chronixx|protoje|koffee|ub40|third world|steel pulse|\bculture\b|john holt|alton ellis|ken boothe|freddie mcgregor|marcia griffiths|jah cure|tarrus riley|romain virgo|damian marley|ziggy marley|stephen marley|lucky dube|inner circle|maxi priest|morgan heritage|richie spice|luciano|garnett silk|everton blender|i wayne|etana|queen ifrica|jah9|lila ike|kabaka pyramid|scratch perry|king tubby|augustus pablo|black uhuru|israel vibration|horace andy|sugar minott|johnny osbourne|junior reid|jacob miller|desmond dekker|skatalites/i;
+const JAM_DANCEHALL = /beenie man|buju|bounty killer|vybz|kartel|popcaan|sean paul|shaggy|\bspice\b|shabba|elephant man|mr\.? ?vegas|\bt\.?\s?o\.?\s?k\b|\bnotch\b|chaka demus|pliers|super cat|ninjaman|lady saw|capleton|sizzla|mavado|aidonia|alkaline|masicka|skillibeng|shenseea|konshens|busy signal|i-octane|baby cham|wayne wonder|tanya stephens|ding dong|charly black|demarco|bugle|tommy lee|serani|voicemail|wayne marshall|agent sasco|patra|red rat|goofy|admiral bailey|yellowman|barrington levy|tenor saw|half pint|bogle|stylo g|govana|intence|valiant|teejay|chronic law|rygin king|jahvillani|dexta daps|jada kingdom|frisco kid|ward 21|gyptian|munga|ce'?cile|ms\.? thing/i;
+function styleFromTags(tg) {
+  const who = [tg.artist, tg.albumArtist].filter(Boolean).join(' '), g = (tg.genre || '').toLowerCase(), alb = (tg.album || '').toLowerCase();
+  if (JAM_ROOTS.test(who)) return 'Reggae';
+  if (JAM_DANCEHALL.test(who) || /dancehall|riddim|ragga|bashment/.test(alb + ' ' + g)) return 'Dancehall';
+  if (/reggae|roots|\bdub\b|\bska\b|rocksteady|lovers rock/.test(g)) return 'Reggae';
+  if (/r&b|r'n'b|rnb|soul|new jack|slow jam|quiet storm|funk/.test(g)) return 'R&B';
+  if (/hip.?hop|rap|trap|crunk|drill|grime|bounce|gangsta|boom.?bap|miami bass/.test(g)) return 'Hip-hop';
+  if (/house|edm|electro|dance|techno|trance|dubstep|drum|tropical|disco|club/.test(g)) return 'Dance';
+  return 'Pop';
+}
+const eraOf = y => !y ? '' : y < 2005 ? 'Old school' : 'New';
+function styleName(t) { return t.loops ? 'loop:' + t.genre : (t.style || (t.style = styleFromTags({ genre: t.genre, artist: t.artist }))); }
+
+// Reads the title, artist, genre and year stored inside FLAC and MP3 files
+function putTag(tg, k, v) {
+  v = (v || '').trim(); if (!v) return;
+  if (k === 'TITLE') tg.title = v; else if (k === 'ARTIST') tg.artist = v; else if (k === 'ALBUMARTIST') tg.albumArtist = v;
+  else if (k === 'ALBUM') tg.album = v; else if (k === 'GENRE') tg.genre = v;
+  else if (/^(DATE|YEAR|ORIGINALDATE)$/.test(k)) { const y = parseInt(v, 10); if (y >= 1950 && y <= 2100 && (k === 'ORIGINALDATE' || !tg.year)) tg.year = y; }
+}
+async function readTags(file) {
+  const tg = {};
+  try {
+    const h = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer()), dv = new DataView(h.buffer);
+    const txt = (a, b, enc = 'utf-8') => new TextDecoder(enc).decode(h.subarray(a, b));
+    const syncsafe = p => ((h[p] & 127) << 21) | ((h[p + 1] & 127) << 14) | ((h[p + 2] & 127) << 7) | (h[p + 3] & 127);
+    if (txt(0, 4) === 'fLaC') {
+      let p = 4, last = false;
+      while (!last && p + 4 <= h.length) {
+        last = !!(h[p] & 0x80); const type = h[p] & 0x7f, len = (h[p + 1] << 16) | (h[p + 2] << 8) | h[p + 3]; p += 4;
+        if (type === 4 && p + len <= h.length) {
+          let q = p + 4 + dv.getUint32(p, true); const n = dv.getUint32(q, true); q += 4;
+          for (let i = 0; i < n && q + 4 <= p + len; i++) {
+            const l = dv.getUint32(q, true), s = txt(q + 4, q + 4 + l); q += 4 + l;
+            const k = s.indexOf('='); if (k > 0) putTag(tg, s.slice(0, k).toUpperCase(), s.slice(k + 1));
+          }
+        }
+        p += len;
+      }
+    } else if (txt(0, 3) === 'ID3' && h[3] >= 3) {
+      const v4 = h[3] === 4, end = Math.min(10 + syncsafe(6), h.length);
+      let p = 10 + (h[5] & 0x40 ? (v4 ? syncsafe(10) : dv.getUint32(10) + 4) : 0);
+      const MAP = { TIT2: 'TITLE', TPE1: 'ARTIST', TPE2: 'ALBUMARTIST', TALB: 'ALBUM', TCON: 'GENRE', TYER: 'YEAR', TDRC: 'DATE', TDOR: 'ORIGINALDATE' };
+      while (p + 10 <= end) {
+        const id = txt(p, p + 4, 'latin1'); if (!/^[A-Z0-9]{4}$/.test(id)) break;
+        const len = v4 ? syncsafe(p + 4) : dv.getUint32(p + 4), b = p + 10; p = b + len;
+        if (!MAP[id] || len < 2) continue;
+        const enc = h[b], s = txt(b + 1, b + len, enc === 1 ? 'utf-16' : enc === 2 ? 'utf-16be' : enc === 3 ? 'utf-8' : 'latin1');
+        putTag(tg, MAP[id], s.split('\0')[0].replace(/^\((\d+)\)/, ''));
+      }
+    }
+  } catch (e) {}
+  return tg;
+}
+async function addFiles(files) {
   resume();
   const list = [...files].filter(f => /^audio\//.test(f.type) || /\.(flac|mp3|m4a|aac|wav|ogg|opus)$/i.test(f.name));
   if (!list.length) { toast('Those are not music files.'); return; }
+  toast(`Reading ${list.length} songs…`);
   for (const f of list) {
     if (crate.some(t => t.file && t.file.name === f.name && t.file.size === f.size)) continue;
+    const tg = await readTags(f), style = styleFromTags(tg);
     const e = {
-      title: f.name.replace(/\.[^.]+$/, '').replace(/^\d+\s*[-.]\s*/, ''), genre: 'Your songs', key: '—', keyName: '',
+      title: tg.title || f.name.replace(/\.[^.]+$/, '').replace(/^\d+\s*[-.]\s*/, ''), artist: tg.artist || '',
+      genre: style, style, year: tg.year || 0, era: eraOf(tg.year), key: '—', keyName: '',
       bpm: 0, offset: 0, grid: false, loops: false, user: true, file: f, buffer: null, peaks: null
     };
     crate.push(e); analyzeQ.push(e);
   }
-  renderCrate(); toast(`Reading ${list.length} songs to find their tempo…`); analyzeAll();
+  renderCrate(); toast(`Finding the tempo of ${list.length} songs. Check each song's style and era in the crate.`); analyzeAll();
 }
+function setSongStyle(t, style) { t.style = t.genre = style; renderCrate(); }
 async function loadEntry(deck, e) {
   if (e.buffer) { deck.load(e); return true; }
   deck.cache.loading = `Loading “${e.title}”…`;
@@ -1613,7 +1705,12 @@ async function loadPool() {
 }
 function candidates() {
   if (isAudiusSource()) return (A.audPool || []).filter(t => !t.failed);
-  return crate.filter(t => isReady(t) && !t.failed && (A.genre === 'all' || t.genre === A.genre));
+  const g = A.genre;
+  const pick = t => g === 'all' || (g === 'jam' ? /^(Dancehall|Reggae)$/.test(t.genre) : g === 'era:old' ? t.era === 'Old school' : g === 'era:new' ? t.era === 'New' : t.genre === g);
+  const pool = crate.filter(t => isReady(t) && !t.failed && pick(t));
+  // once there are real songs to play, the built-in practice loops stay out of the set
+  const songs = pool.filter(t => !t.loops);
+  return songs.length >= 2 ? songs : pool;
 }
 const shuffle = a => a.map(v => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map(p => p[1]);
 
@@ -1671,6 +1768,30 @@ const PROFILES = {
   'Dubstep': { family: 'half', fx: ['riser', 'horn'], drop: 'horn' }
 };
 const GENERIC = { family: 'other', fx: ['echoThrow', 'filterDip'], drop: ['siren', 'gun', 'horn', 'bomb'] };
+/* How a DJ plays each style of real song:
+   play     about how many seconds of a song before moving on
+   out      the ways out of a song, with weights (cut on the beat, echo out, spinback, smooth fade, riser)
+   blend    bars of beatmatched overlap when two songs of this style have close tempos (0 = never)
+   drops    effects fired as the next song lands, and how often
+   fx       effects during a song, and how often per 8 bars
+   pullUp   chance of a "pull up": rewind a song and play it again from the top, sound-system style */
+const SONG_STYLES = {
+  // Jamaican selectors juggle: short plays, hard cuts on the one, sirens, gunshots and pull-ups
+  'Dancehall': { play: 75, out: [['cut', 5], ['spin', 2], ['echo', 3]], blend: 0, drops: ['siren', 'gun', 'horn'], dropChance: 0.85, fx: ['siren', 'gun', 'horn', 'echoThrow'], fxChance: 0.3, pullUp: 0.25 },
+  // roots and culture: let the tune breathe, dub echoes and the odd siren, no gunshots
+  'Reggae': { play: 160, out: [['echo', 6], ['fade', 3]], blend: 0, drops: ['siren'], dropChance: 0.4, fx: ['siren', 'echoThrow'], fxChance: 0.2, pullUp: 0.08 },
+  // hip-hop: about a verse and a hook each, quick cuts and spinbacks, an air horn now and then
+  'Hip-hop': { play: 105, out: [['cut', 4], ['spin', 3], ['echo', 2]], blend: 8, drops: ['horn', 'gun'], dropChance: 0.45, fx: ['horn', 'echoThrow', 'filterDip'], fxChance: 0.15, pullUp: 0.08 },
+  // R&B: smooth and sweet, long plays, soft fades, no sound effects at all
+  'R&B': { play: 150, out: [['fade', 6], ['echo', 2]], blend: 8, drops: [], dropChance: 0, fx: [], fxChance: 0, pullUp: 0 },
+  // pop: play through the big chorus, clean echo-outs and risers
+  'Pop': { play: 140, out: [['echo', 4], ['riser', 3], ['cut', 2]], blend: 8, drops: ['horn'], dropChance: 0.2, fx: ['filterDip', 'riser'], fxChance: 0.1, pullUp: 0 },
+  // club dance music: long beatmatched blends
+  'Dance': { play: 150, out: [['riser', 3], ['echo', 3]], blend: 16, drops: ['horn', 'laser'], dropChance: 0.3, fx: ['filterDip', 'riser', 'echoThrow'], fxChance: 0.15, pullUp: 0 }
+};
+function songStyle(t) { return t && !t.loops ? SONG_STYLES[styleName(t)] || SONG_STYLES.Pop : null; }
+function wpick(list) { let r = Math.random() * list.reduce((s, x) => s + x[1], 0); for (const [v, w] of list) if ((r -= w) <= 0) return v; return list[0][0]; }
+const FIRE = { horn: t => fxHornAt(t), laser: t => fxLaserAt(t), siren: t => fxSirenAt(t), gun: t => fxGunAt(t), bomb: t => fxBombAt(t - 1.2) };
 // Audius uses many more genre names; map them onto the closest mixing style
 function prof(t) {
   if (PROFILES[t.genre]) return PROFILES[t.genre];
@@ -1685,8 +1806,8 @@ function prof(t) {
   if (/hip|rap|r&b|soul|pop|lo-fi|jersey/.test(g)) return PROFILES['Hip-hop'];
   return GENERIC;
 }
-const PLAN_NAMES = { bass: 'Bass-swap blend', filter: 'Filter blend', echo: 'Echo out', riser: 'Riser drop', cut: 'Quick cut' };
-const FX_NAMES = { filterDip: 'Filter dip', echoThrow: 'Echo throw', horn: 'Air horn', laser: 'Laser', riser: 'Riser', siren: 'Siren horn', gun: 'Gunshots', bomb: 'Bomb' };
+const PLAN_NAMES = { bass: 'Bass-swap blend', filter: 'Filter blend', echo: 'Echo out', riser: 'Riser drop', cut: 'Quick cut', spin: 'Spinback', fade: 'Smooth fade' };
+const FX_NAMES = { filterDip: 'Filter dip', echoThrow: 'Echo throw', horn: 'Air horn', laser: 'Laser', riser: 'Riser', siren: 'Siren horn', gun: 'Gunshots', bomb: 'Bomb', pullUp: 'Pull up! Rewind' };
 const planName = p => PLAN_NAMES[p.type === 'blend' ? p.mode : p.type];
 
 const A = { on: false, fx: true, genre: 'all', cur: null, next: null, plan: null, target: 0, curStart: 0, launched: false,
@@ -1705,7 +1826,7 @@ function keyDist(a, b) {
   const d = Math.abs(+ma[1] - +mb[1]);
   return Math.min(d, 12 - d) + (ma[2] === mb[2] ? 0 : 1);
 }
-function preBars(p) { return !p ? 0 : p.type === 'echo' ? 1 : p.type === 'riser' ? 2 : 0; }
+function preBars(p) { return !p ? 0 : p.type === 'echo' || p.type === 'spin' ? 1 : p.type === 'riser' ? 2 : 0; }
 function schedule(t, fn) { A.events.push({ t, fn }); }
 function rampCtl(ctl, to, t0, t1, tag) { A.ramps.push({ get: () => ctl.value, set: v => ctl.set(v), from: null, to, t0, t1, tag }); }
 function neutral(d) { for (const k of ['hi', 'mid', 'lo', 'filter']) d.ctl[k].set(0); }
@@ -1726,13 +1847,29 @@ function pickNext(cur) {
     // harmonic (Camelot) neighbours and close tempos score higher; recent tracks lose points
     let s = -1.6 * keyDist(cur.key, t.key) - tempoGap(cur.bpm, t.bpm) / 5 + Math.random() * 3.5;
     const ri = A.recent.lastIndexOf(t); if (ri >= 0) s -= 4 + 2 * ri;
-    if (A.genre === 'all' && t.genre !== cur.genre) s += 1.5;
+    if (t.loops) { if (A.genre === 'all' && t.genre !== cur.genre) s += 1.5; }
+    else if (A.block) {
+      // play a block of one style (say four dancehall tunes), then switch to another, like a DJ reading the room
+      const same = styleName(t) === A.block.style;
+      if (A.block.n < A.block.len) s += same ? 5 : 0; else s += same ? 0 : 4;
+      if (t.era && t.era === cur.era) s += 0.7;   // old school with old school, new with new, most of the time
+    }
     if (s > bs) { bs = s; best = t; }
   }
   return best;
 }
 function choosePlan(a, b) {
   const pa = prof(a), pb = prof(b), gap = tempoGap(a.bpm, b.bpm);
+  const S = songStyle(a) || songStyle(b);
+  if (S) {
+    // real songs: transitions follow the style of the song that's ending
+    const SB = songStyle(b) || S, same = styleName(a) === styleName(b);
+    const close = a.grid && b.grid && a.bpm && b.bpm && gap <= ((a.user || b.user) ? 3 : 4);
+    if (S.blend && SB.blend && same && close && Math.random() < 0.7) return { type: 'blend', bars: S.blend, mode: S.blend >= 16 && Math.random() < 0.5 ? 'filter' : 'bass' };
+    let type = wpick(S.out);
+    if (type === 'fade' && !/^(R&B|Reggae)$/.test(styleName(b))) type = 'echo';   // a slow fade into a party tune loses the floor
+    return { type };
+  }
   // Speeding a song up also raises its pitch (like a record), so real songs are only beatmatched when
   // their tempos are already close; estimated tempos (your own files) get an even tighter limit.
   const maxGap = a.loops && b.loops ? 8 : (a.user || b.user) ? 3 : 4;
@@ -1751,8 +1888,9 @@ function computeTarget(cur, plan) {
     if (target < minT) target = Math.ceil(minT / 8) * 8;
   } else {
     const endBar = Math.floor((cur.dur - grid(cur).off) / barBuf);
-    target = plan.type === 'blend' ? endBar - plan.bars - 1 : endBar - 1;
-    target = Math.min(target, A.curStart + Math.round(150 / barBuf / 8) * 8);
+    target = plan.type === 'blend' ? endBar - plan.bars - 1 : plan.type === 'fade' ? endBar - 3 : endBar - 1;
+    const play = (songStyle(tr) || { play: 150 }).play;
+    target = Math.min(target, A.curStart + Math.max(8, Math.round(play / barBuf / 8) * 8));
     if (target < minT) target = minT;
   }
   return target;
@@ -1803,18 +1941,31 @@ function launch() {
     if (A.fx && prof(out.track).fx.includes('riser') && L >= 8) { fxRiserAt(half - 2 * bs, 2 * bs); noteFx('riser', half - 2 * bs); }
     schedule(end + 0.05, () => finish(out, inn, plan));
   } else {
-    const preT = tT - pre * bs;
-    if (plan.type === 'echo') { setEcho(true, preT, 60 / (out.effBpm || 120) * 0.75); setEcho(false, tT); rampCtl(out.ctl.filter, 0.6, preT, tT); }
-    else { fxRiserAt(preT, 2 * bs); rampCtl(out.ctl.filter, 0.75, preT, tT); rampCtl(out.ctl.lo, -1, preT, tT); }
+    const preT = tT - pre * bs, type = plan.type;
+    if (type === 'fade') {
+      // smooth: the next song rises while this one sinks under a low-pass, over two bars, no effects
+      const fb = 2 * bs;
+      inn.setTempo(0, false); neutral(inn); inn.ctl.vol.set(0);
+      inn.playAt(tT, startPos);
+      rampCtl(inn.ctl.vol, 0.85, tT, tT + fb);
+      rampCtl(out.ctl.filter, -0.6, tT, tT + fb);
+      rampCtl(out.ctl.vol, 0, tT, tT + fb);
+      schedule(tT + fb + 0.05, () => finish(out, inn, plan));
+      renderAuto(); return;
+    }
+    if (type === 'echo') { setEcho(true, preT, 60 / (out.effBpm || 120) * 0.75); setEcho(false, tT); rampCtl(out.ctl.filter, 0.6, preT, tT); }
+    else if (type === 'riser') { fxRiserAt(preT, 2 * bs); rampCtl(out.ctl.filter, 0.75, preT, tT); rampCtl(out.ctl.lo, -1, preT, tT); }
+    else if (type === 'spin') { const d = Math.min(0.9, bs * 0.9); schedule(tT - d - 0.15, () => spinOut(out, tT - d, d)); }
+    // 'cut': the next song simply slams in on the one
     inn.setTempo(0, false); neutral(inn); inn.ctl.vol.set(0.85);
     inn.playAt(tT, startPos);
     out.fader.gain.setValueAtTime(0, tT);
     schedule(tT, () => out.ctl.vol.set(0));
-    let drop = prof(inn.track).drop;
-    if (Array.isArray(drop)) drop = drop[Math.floor(Math.random() * drop.length)];
-    // the bomb's whistle falls for 1.2 s, so it starts early and explodes right on the new song's first beat
-    const DROPS = { horn: fxHornAt, laser: fxLaserAt, siren: fxSirenAt, gun: fxGunAt, bomb: t => fxBombAt(t - 1.2) };
-    if (A.fx && drop) { DROPS[drop](tT); noteFx(drop, tT); }
+    let drop = null;
+    const SB = songStyle(inn.track);
+    if (SB) { if (SB.drops.length && Math.random() < SB.dropChance) drop = SB.drops[Math.floor(Math.random() * SB.drops.length)]; }
+    else { drop = prof(inn.track).drop; if (Array.isArray(drop)) drop = drop[Math.floor(Math.random() * drop.length)]; }
+    if (A.fx && drop) { FIRE[drop](tT); noteFx(drop, tT); }
     schedule(tT + 2 * bs, () => finish(out, inn, plan));
   }
   renderAuto();
@@ -1825,7 +1976,9 @@ function finish(out, inn, plan) {
   A.history.push(`${out.track.title} → ${inn.track.title} · ${planName(plan)}`);
   if (A.history.length > 6) A.history.shift();
   A.recent.push(inn.track); if (A.recent.length > 4) A.recent.shift();
-  A.cur = inn; A.next = null; A.plan = null; A.launched = false; A.curStart = 0; A.lastFxBar = -1;
+  A.cur = inn; A.next = null; A.plan = null; A.launched = false; A.curStart = 0; A.lastFxBar = -1; A.pulled = false;
+  const st = styleName(inn.track);
+  if (!A.block || A.block.style !== st) A.block = { style: st, n: 1, len: 3 + Math.floor(Math.random() * 3) }; else A.block.n++;
   // ease the new track back toward its own tempo, like riding the pitch fader
   if (Math.abs(inn.tempo) > 0.05 && Math.abs(inn.tempo) <= 8) {
     const t = ctx.currentTime, bs = barSec(inn);
@@ -1848,6 +2001,7 @@ function doFx(kind, d, tB, bs) {
   else if (kind === 'horn') fxHornAt(tB);
   else if (kind === 'laser') fxLaserAt(tB);
   else if (kind === 'siren') fxSirenAt(tB - barSec(d) / 2, barSec(d) * 1.5);
+  else if (kind === 'gun') fxGunAt(tB);
   else if (kind === 'riser') {
     const s = Math.max(now, tB - 2 * bs);
     fxRiserAt(s, tB - s); rampCtl(d.ctl.filter, 0.45, s, tB - 0.05, 'fx'); rampCtl(d.ctl.filter, 0, tB - 0.02, tB + 0.06, 'fx');
@@ -1858,10 +2012,10 @@ function maybeFx(cur, bars) {
   const nextB = Math.ceil(bars / 8 + 1e-6) * 8;   // next 8-bar phrase
   if (nextB === A.lastFxBar || nextB - bars > 2.2) return;
   A.lastFxBar = nextB;
-  // real songs already have vocals and production, so effects are rarer and subtler on them than on the loops
-  const song = !cur.track.loops;
-  if (nextB >= A.target - preBars(A.plan) - 1 || Math.random() > (song ? 0.12 : 0.4)) return;
-  const p = prof(cur.track), kinds = song ? ['filterDip', 'echoThrow', 'siren'] : p.fx, kind = kinds[Math.floor(Math.random() * kinds.length)];
+  // real songs get the effects their style calls for (lots for dancehall, none for R&B); the loops keep their own
+  const S = songStyle(cur.track), kinds = S ? S.fx : prof(cur.track).fx;
+  if (!kinds.length || nextB >= A.target - preBars(A.plan) - 1 || Math.random() > (S ? S.fxChance : 0.4)) return;
+  const kind = kinds[Math.floor(Math.random() * kinds.length)];
   doFx(kind, cur, timeOfBar(cur, nextB), barSec(cur));
 }
 function autoStep() {
@@ -1872,8 +2026,18 @@ function autoStep() {
     else { setAuto(false); toast('Auto DJ stopped because the playing deck was paused.'); }
     return;
   }
+  if (!A.block && cur.track) A.block = { style: styleName(cur.track), n: 1, len: 3 + Math.floor(Math.random() * 3) };
   if (!A.next) { prepareNext(); if (!A.next) return; }
   const bars = barsOf(cur);
+  // "Pull up!": once in a while a big tune gets rewound and played again from the top, then a siren or gunshots
+  const S = songStyle(cur.track);
+  if (A.fx && S && S.pullUp && !A.pulled && bars >= 16 && bars < A.target - 12) {
+    A.pulled = true;
+    if (Math.random() < S.pullUp && fxRewind(cur, t => {
+      const k = /^(Dancehall)$/.test(styleName(cur.track)) ? (Math.random() < 0.5 ? 'gun' : 'siren') : 'horn';
+      FIRE[k](t + 0.05); noteFx(k, t);
+    })) { noteFx('pullUp', ctx.currentTime); return; }
+  }
   if (A.fx) maybeFx(cur, bars);
   if (bars >= A.target - preBars(A.plan) - 0.75) launch();
 }
@@ -1893,7 +2057,7 @@ function tick() {
   if (A.on) autoStep();
 }
 async function setAuto(on) {
-  A.ramps = []; A.events = [];
+  A.ramps = []; A.events = []; A.block = null; A.pulled = false;
   if (!on) {
     A.on = false; A.cur = null; A.next = null; A.plan = null; A.launched = false; A.preparing = false;
     setEcho(false, ctx.currentTime); renderAuto(); return;
@@ -1956,11 +2120,16 @@ function renderAuto() {
   if (autoLog.dataset.key !== log) { autoLog.innerHTML = log; autoLog.dataset.key = log; }
 }
 function populateGenres() {
-  const gs = [...new Set(crate.filter(isReady).map(t => t.genre))], key = gs.join('|');
+  const ready = crate.filter(isReady), gs = [...new Set(ready.map(t => t.genre))];
+  const jam = ready.some(t => !t.loops && /^(Dancehall|Reggae)$/.test(t.genre)), eras = [...new Set(ready.map(t => t.era).filter(Boolean))];
+  const key = gs.join('|') + '#' + jam + eras.join('|');
   if (autoGenre.dataset.key === key) return;
   autoGenre.dataset.key = key;
   const v = autoGenre.value;
   autoGenre.innerHTML = '<optgroup label="My crate"><option value="all">Everything in the crate</option>'
+    + (jam ? '<option value="jam">Dancehall &amp; Reggae (Jamaica)</option>' : '')
+    + (eras.includes('Old school') ? '<option value="era:old">Old school (before 2005)</option>' : '')
+    + (eras.includes('New') ? '<option value="era:new">New school (2005 and later)</option>' : '')
     + gs.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Audius trending (streams)"><option value="audius:">All genres</option>'
     + AUD_GENRES.map(g => `<option value="audius:${esc(g)}">${esc(g)}</option>`).join('') + '</optgroup>';
