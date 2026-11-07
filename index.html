@@ -282,6 +282,12 @@ kbd{font-family:var(--mono);font-size:11.5px;color:var(--fg);background:var(--ra
           <button class="btn" id="fxHorn" title="Air horn">Horn</button>
           <button class="btn" id="fxRise" title="Noise sweep that builds for about 3 seconds">Riser</button>
           <button class="btn" id="fxLaser" title="Laser zaps">Laser</button>
+          <button class="btn" id="fxSiren" title="Siren horn">Siren</button>
+          <button class="btn" id="fxGun" title="Gunshot sound effect">Gun</button>
+          <button class="btn" id="fxBomb" title="Falling bomb and explosion">Bomb</button>
+          <button class="btn" id="fxWhistle" title="Party whistle">Whistle</button>
+          <button class="btn" id="fxRewind" title="Rewind: spins the playing song backwards and starts it again from the top">Rewind</button>
+          <label class="btn file" tabindex="0" id="padAdd" title="Add your own sound effect files as extra buttons">+ Sound<input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac" multiple id="padIn" hidden></label>
         </div>
       </div>
       <div class="xf">
@@ -372,10 +378,12 @@ document.addEventListener('keydown', resume, true);
 ctx.onstatechange = updateStatus;
 updateStatus();
 
-const masterBus = ctx.createGain();
+// Headroom: real songs are mastered right up to full scale, so the mix bus sits a few dB lower and the
+// limiter only catches the peaks when two songs overlap, instead of squashing every beat.
+const masterBus = ctx.createGain(); masterBus.gain.value = 0.75;
 const limiter = ctx.createDynamicsCompressor();
-limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.12;
-const masterGain = ctx.createGain(); masterGain.gain.value = 0.8;
+limiter.threshold.value = -1; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.003; limiter.release.value = 0.25;
+const masterGain = ctx.createGain(); masterGain.gain.value = 1;
 const masterAn = ctx.createAnalyser(); masterAn.fftSize = 1024;
 masterBus.connect(limiter); limiter.connect(masterGain); masterGain.connect(ctx.destination); masterGain.connect(masterAn);
 
@@ -1253,7 +1261,7 @@ for (const d of decks) {
   };
   d.vuEl = $(`[data-vu="${d.id}"]`);
 }
-control($('#masterK'), { min: 0, max: 1, value: 0.8, def: 0.8, label: 'Master volume', onInput: v => masterGain.gain.setTargetAtTime(v * v * 1.25, ctx.currentTime, 0.01) });
+control($('#masterK'), { min: 0, max: 1, value: 0.9, def: 0.9, label: 'Master volume', onInput: v => masterGain.gain.setTargetAtTime(Math.min(1, v * v * 1.25), ctx.currentTime, 0.01) });   // never above 1: that would clip after the limiter
 function applyXf(x) {
   const gA = x <= 0.5 ? 1 : Math.cos((x - 0.5) * Math.PI), gB = x >= 0.5 ? 1 : Math.cos((0.5 - x) * Math.PI), t = ctx.currentTime;
   deckA.xf.gain.setTargetAtTime(gA, t, 0.008); deckB.xf.gain.setTargetAtTime(gB, t, 0.008);
@@ -1283,7 +1291,7 @@ fxEcho.addEventListener('click', () => {
 });
 function fxHornAt(t0) {
   const out = ctx.createGain(), f = ctx.createBiquadFilter();
-  out.gain.value = 0.2; f.type = 'lowpass'; f.frequency.value = 2600; f.Q.value = 3; f.connect(out); out.connect(masterBus);
+  out.gain.value = 0.12; f.type = 'lowpass'; f.frequency.value = 2600; f.Q.value = 3; f.connect(out); out.connect(masterBus);
   for (const [o, len] of [[0, 0.12], [0.17, 0.12], [0.34, 0.12], [0.52, 0.6]]) {
     const t = t0 + o, g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.012); g.gain.setValueAtTime(1, t + len - 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
@@ -1299,20 +1307,142 @@ function fxRiserAt(t, d) {
   const s = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain();
   s.buffer = liveNoise; s.loop = true; bp.type = 'bandpass'; bp.Q.value = 4;
   bp.frequency.setValueAtTime(250, t); bp.frequency.exponentialRampToValueAtTime(9000, t + d);
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.55, t + d); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.08);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.3, t + d); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.08);
   s.connect(bp); bp.connect(g); g.connect(masterBus); s.start(t); s.stop(t + d + 0.1);
 }
 function fxLaserAt(t0) {
   for (const o of [0, 0.13, 0.26]) {
     const t = t0 + o, os = ctx.createOscillator(), g = ctx.createGain();
     os.type = 'square'; os.frequency.setValueAtTime(2400, t); os.frequency.exponentialRampToValueAtTime(140, t + 0.22);
-    g.gain.setValueAtTime(0.1, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+    g.gain.setValueAtTime(0.06, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
     os.connect(g); g.connect(masterBus); os.start(t); os.stop(t + 0.25);
   }
 }
 $('#fxHorn').addEventListener('click', () => { resume(); fxHornAt(ctx.currentTime + 0.01); });
 $('#fxRise').addEventListener('click', () => { resume(); fxRiserAt(ctx.currentTime + 0.01, 3.2); });
 $('#fxLaser').addEventListener('click', () => { resume(); fxLaserAt(ctx.currentTime + 0.01); });
+// Siren horn: a dub-style siren, a buzzy tone whose pitch whoops up and down, with an echo tail
+function fxSirenAt(t0, d = 2.4) {
+  const os = ctx.createOscillator(), os2 = ctx.createOscillator(), lfo = ctx.createOscillator(), depth = ctx.createGain();
+  const f = ctx.createBiquadFilter(), g = ctx.createGain(), dly = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
+  os.type = 'sawtooth'; os2.type = 'square'; os2.detune.value = 7;
+  lfo.type = 'triangle'; lfo.frequency.setValueAtTime(2.2, t0); lfo.frequency.linearRampToValueAtTime(6.5, t0 + d);
+  depth.gain.value = 320;
+  for (const o of [os, os2]) { o.frequency.setValueAtTime(780, t0); o.frequency.linearRampToValueAtTime(980, t0 + d); }
+  lfo.connect(depth); depth.connect(os.frequency); depth.connect(os2.frequency);
+  f.type = 'lowpass'; f.frequency.value = 3200; f.Q.value = 2;
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.05);
+  g.gain.setValueAtTime(0.07, t0 + d - 0.12); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+  dly.delayTime.value = 0.3; fb.gain.value = 0.4; wet.gain.value = 0.5;
+  os.connect(f); os2.connect(f); f.connect(g); g.connect(masterBus);
+  g.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(masterBus);
+  for (const o of [os, os2, lfo]) { o.start(t0); o.stop(t0 + d + 0.05); }
+  setTimeout(() => { try { wet.disconnect(); } catch (e) {} }, (t0 - ctx.currentTime + d + 3) * 1000);
+}
+$('#fxSiren').addEventListener('click', () => { resume(); fxSirenAt(ctx.currentTime + 0.01); });
+
+// a short echo tail shared by the one-shot effects below
+function fxTail(node, time = 0.22, fbAmt = 0.35, wetAmt = 0.35, life = 3) {
+  const dly = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
+  dly.delayTime.value = time; fb.gain.value = fbAmt; wet.gain.value = wetAmt;
+  node.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(masterBus);
+  setTimeout(() => { try { wet.disconnect(); fb.disconnect(); } catch (e) {} }, life * 1000);
+}
+function noiseBurst(t, dur, peak, type, freqFrom, freqTo, dest) {
+  const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = liveNoise; f.type = type; f.frequency.setValueAtTime(freqFrom, t); f.frequency.exponentialRampToValueAtTime(freqTo, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(dest); s.start(t, Math.random()); s.stop(t + dur + 0.02);
+}
+function thump(t, dur, peak, from, to, dest) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(from, t); o.frequency.exponentialRampToValueAtTime(to, t + dur);
+  g.gain.setValueAtTime(peak, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.02);
+}
+// Gunshot: a sharp crack with a low punch, three in a row, ringing out
+function fxGunAt(t0, shots = 3) {
+  const bus = ctx.createGain(); bus.gain.value = 0.9; bus.connect(masterBus); fxTail(bus, 0.19, 0.4, 0.4);
+  for (let i = 0; i < shots; i++) {
+    const t = t0 + i * 0.3;
+    noiseBurst(t, 0.28, 0.55, 'lowpass', 7000, 600, bus);
+    thump(t, 0.18, 0.5, 160, 45, bus);
+  }
+}
+// Bomb: a falling whistle, then a deep explosion
+function fxBombAt(t0) {
+  const bus = ctx.createGain(); bus.gain.value = 0.9; bus.connect(masterBus);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(2200, t0); o.frequency.exponentialRampToValueAtTime(380, t0 + 1.2);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.05, t0 + 0.2); g.gain.setValueAtTime(0.05, t0 + 1.1); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.22);
+  o.connect(g); g.connect(bus); o.start(t0); o.stop(t0 + 1.25);
+  const tb = t0 + 1.2;
+  noiseBurst(tb, 2.2, 0.6, 'lowpass', 1400, 60, bus);
+  thump(tb, 1.6, 0.8, 90, 22, bus);
+  fxTail(bus, 0.33, 0.3, 0.3, 5);
+}
+// Whistle: short, short, long, with a fast warble
+function fxWhistleAt(t0) {
+  for (const [o, len] of [[0, 0.11], [0.19, 0.11], [0.38, 0.55]]) {
+    const t = t0 + o, os = ctx.createOscillator(), lfo = ctx.createOscillator(), dep = ctx.createGain(), g = ctx.createGain();
+    os.frequency.value = 2900; lfo.frequency.value = 28; dep.gain.value = 90;
+    lfo.connect(dep); dep.connect(os.frequency);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.01); g.gain.setValueAtTime(0.06, t + len - 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    os.connect(g); g.connect(masterBus);
+    for (const x of [os, lfo]) { x.start(t); x.stop(t + len + 0.02); }
+  }
+}
+// Rewind: spin the playing song backwards, then start it again from the top, like a selector pulling it up
+function fxRewind() {
+  const d = masterDeck();
+  if (!d || !d.buffer) { toast('Play a song first, then rewind it.'); return; }
+  if (A.on && A.launched) { toast('Wait until Auto DJ finishes this mix, then rewind.'); return; }
+  d.commit();
+  const buf = d.buffer, sr = buf.sampleRate, end = Math.floor(d.pos * sr), len = Math.min(end, Math.floor(3 * sr));
+  if (len < sr * 0.3) { toast('The song has only just started.'); return; }
+  const rb = ctx.createBuffer(buf.numberOfChannels, len, sr);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const src = buf.getChannelData(c), dst = rb.getChannelData(c);
+    for (let i = 0; i < len; i++) dst[i] = src[end - 1 - i];
+  }
+  const s = ctx.createBufferSource(), g = ctx.createGain(), t = ctx.currentTime + 0.02;
+  s.buffer = rb;
+  s.playbackRate.setValueAtTime(0.7, t); s.playbackRate.exponentialRampToValueAtTime(4, t + 1.1);
+  g.gain.setValueAtTime(1, t); g.gain.setValueAtTime(1, t + 0.75); g.gain.linearRampToValueAtTime(0.0001, t + 1.2);
+  s.connect(g); g.connect(d.input);
+  A.rewinding = true;
+  d.pause(); s.start(t); s.stop(t + 1.3);
+  setTimeout(() => {
+    d.playAt(ctx.currentTime + 0.02, d.track && d.track.grid ? d.offset : 0);
+    A.rewinding = false;
+  }, 1450);
+}
+$('#fxGun').addEventListener('click', () => { resume(); fxGunAt(ctx.currentTime + 0.01); });
+$('#fxBomb').addEventListener('click', () => { resume(); fxBombAt(ctx.currentTime + 0.01); });
+$('#fxWhistle').addEventListener('click', () => { resume(); fxWhistleAt(ctx.currentTime + 0.01); });
+$('#fxRewind').addEventListener('click', () => { resume(); fxRewind(); });
+
+// Your own sound effects: each file becomes an extra button. They stay on this device and last until the page is closed.
+const padIn = $('#padIn'), padAdd = $('#padAdd');
+padIn.addEventListener('change', async () => {
+  resume();
+  const files = [...padIn.files]; padIn.value = '';
+  for (const f of files) {
+    try {
+      const buf = await decodeBuf(await f.arrayBuffer());
+      const b = document.createElement('button');
+      b.className = 'btn pad'; b.title = f.name;
+      b.textContent = f.name.replace(/\.[^.]+$/, '').slice(0, 9);
+      b.addEventListener('click', () => {
+        resume();
+        const s = ctx.createBufferSource(), g = ctx.createGain();
+        s.buffer = buf; g.gain.value = 0.8; s.connect(g); g.connect(masterBus); s.start();
+      });
+      padAdd.before(b);
+    } catch (e) { toast(`“${f.name}” could not be read.`); }
+  }
+});
+padAdd.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); padIn.click(); } });
 
 /* ---------- crate ---------- */
 const crate = TRACKS.map(t => ({ ...t, loops: true, grid: true, offset: 0, buffer: null, peaks: null }));
@@ -1536,11 +1666,11 @@ const PROFILES = {
   'Disco': { family: 'four', fx: ['echoThrow', 'filterDip'], drop: 'horn' },
   'Trance': { family: 'four', fx: ['riser', 'filterDip'], drop: null },
   'Hip-hop': { family: 'break', fx: ['echoThrow', 'horn'], drop: 'horn' },
-  'Reggaeton': { family: 'break', fx: ['horn', 'echoThrow'], drop: 'horn' },
+  'Reggaeton': { family: 'break', fx: ['siren', 'echoThrow', 'horn'], drop: ['siren', 'gun', 'horn'] },
   'Drum & bass': { family: 'break', fx: ['laser', 'riser'], drop: 'laser' },
   'Dubstep': { family: 'half', fx: ['riser', 'horn'], drop: 'horn' }
 };
-const GENERIC = { family: 'other', fx: ['echoThrow', 'filterDip'], drop: null };
+const GENERIC = { family: 'other', fx: ['echoThrow', 'filterDip'], drop: ['siren', 'gun', 'horn', 'bomb'] };
 // Audius uses many more genre names; map them onto the closest mixing style
 function prof(t) {
   if (PROFILES[t.genre]) return PROFILES[t.genre];
@@ -1556,7 +1686,7 @@ function prof(t) {
   return GENERIC;
 }
 const PLAN_NAMES = { bass: 'Bass-swap blend', filter: 'Filter blend', echo: 'Echo out', riser: 'Riser drop', cut: 'Quick cut' };
-const FX_NAMES = { filterDip: 'Filter dip', echoThrow: 'Echo throw', horn: 'Air horn', laser: 'Laser', riser: 'Riser' };
+const FX_NAMES = { filterDip: 'Filter dip', echoThrow: 'Echo throw', horn: 'Air horn', laser: 'Laser', riser: 'Riser', siren: 'Siren horn', gun: 'Gunshots', bomb: 'Bomb' };
 const planName = p => PLAN_NAMES[p.type === 'blend' ? p.mode : p.type];
 
 const A = { on: false, fx: true, genre: 'all', cur: null, next: null, plan: null, target: 0, curStart: 0, launched: false,
@@ -1603,7 +1733,10 @@ function pickNext(cur) {
 }
 function choosePlan(a, b) {
   const pa = prof(a), pb = prof(b), gap = tempoGap(a.bpm, b.bpm);
-  if (a.grid && b.grid && a.bpm && b.bpm && gap <= 8) {
+  // Speeding a song up also raises its pitch (like a record), so real songs are only beatmatched when
+  // their tempos are already close; estimated tempos (your own files) get an even tighter limit.
+  const maxGap = a.loops && b.loops ? 8 : (a.user || b.user) ? 3 : 4;
+  if (a.grid && b.grid && a.bpm && b.bpm && gap <= maxGap) {
     if (pa.family === 'four' && pb.family === 'four') return { type: 'blend', bars: 16, mode: Math.random() < 0.55 ? 'bass' : 'filter' };
     if (Math.random() < 0.7) return { type: 'blend', bars: 8, mode: 'bass' };
   }
@@ -1677,8 +1810,11 @@ function launch() {
     inn.playAt(tT, startPos);
     out.fader.gain.setValueAtTime(0, tT);
     schedule(tT, () => out.ctl.vol.set(0));
-    const drop = prof(inn.track).drop;
-    if (A.fx && drop) { (drop === 'horn' ? fxHornAt : fxLaserAt)(tT); noteFx(drop, tT); }
+    let drop = prof(inn.track).drop;
+    if (Array.isArray(drop)) drop = drop[Math.floor(Math.random() * drop.length)];
+    // the bomb's whistle falls for 1.2 s, so it starts early and explodes right on the new song's first beat
+    const DROPS = { horn: fxHornAt, laser: fxLaserAt, siren: fxSirenAt, gun: fxGunAt, bomb: t => fxBombAt(t - 1.2) };
+    if (A.fx && drop) { DROPS[drop](tT); noteFx(drop, tT); }
     schedule(tT + 2 * bs, () => finish(out, inn, plan));
   }
   renderAuto();
@@ -1711,6 +1847,7 @@ function doFx(kind, d, tB, bs) {
   else if (kind === 'echoThrow') { setEcho(true, tB - bs / 4, 60 / (d.effBpm || 120) * 0.75); setEcho(false, tB + 0.02); }
   else if (kind === 'horn') fxHornAt(tB);
   else if (kind === 'laser') fxLaserAt(tB);
+  else if (kind === 'siren') fxSirenAt(tB - barSec(d) / 2, barSec(d) * 1.5);
   else if (kind === 'riser') {
     const s = Math.max(now, tB - 2 * bs);
     fxRiserAt(s, tB - s); rampCtl(d.ctl.filter, 0.45, s, tB - 0.05, 'fx'); rampCtl(d.ctl.filter, 0, tB - 0.02, tB + 0.06, 'fx');
@@ -1721,13 +1858,15 @@ function maybeFx(cur, bars) {
   const nextB = Math.ceil(bars / 8 + 1e-6) * 8;   // next 8-bar phrase
   if (nextB === A.lastFxBar || nextB - bars > 2.2) return;
   A.lastFxBar = nextB;
-  if (nextB >= A.target - preBars(A.plan) - 1 || Math.random() > 0.4) return;
-  const p = prof(cur.track), kind = p.fx[Math.floor(Math.random() * p.fx.length)];
+  // real songs already have vocals and production, so effects are rarer and subtler on them than on the loops
+  const song = !cur.track.loops;
+  if (nextB >= A.target - preBars(A.plan) - 1 || Math.random() > (song ? 0.12 : 0.4)) return;
+  const p = prof(cur.track), kinds = song ? ['filterDip', 'echoThrow', 'siren'] : p.fx, kind = kinds[Math.floor(Math.random() * kinds.length)];
   doFx(kind, cur, timeOfBar(cur, nextB), barSec(cur));
 }
 function autoStep() {
   const cur = A.cur;
-  if (!cur || A.launched) return;
+  if (!cur || A.launched || A.rewinding) return;
   if (!cur.playing) {
     if (cur.track && !cur.track.loops && cur.pos >= cur.dur - 0.05) forceNext();
     else { setAuto(false); toast('Auto DJ stopped because the playing deck was paused.'); }
