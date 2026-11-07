@@ -1290,16 +1290,37 @@ fxEcho.addEventListener('click', () => {
   fxEcho.setAttribute('aria-pressed', String(on)); updateEcho();
   echoSend.gain.setTargetAtTime(on ? 0.55 : 0, ctx.currentTime, 0.02);
 });
+// Effects bus: every sound effect goes through a room reverb, so it sounds like it's ringing out in a hall
+const fxBus = ctx.createGain(); fxBus.connect(masterBus);
+const fxVerb = ctx.createConvolver(), fxVerbGain = ctx.createGain(); fxVerbGain.gain.value = 0.32;
+{
+  const len = Math.floor(ctx.sampleRate * 2.2), ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2) * (i < 80 ? i / 80 : 1); }
+  fxVerb.buffer = ir;
+}
+fxBus.connect(fxVerb); fxVerb.connect(fxVerbGain); fxVerbGain.connect(masterBus);
+// soft distortion, for the grit real horns and gunshots have
+function grit(amount) {
+  const ws = ctx.createWaveShaper(), n = 1024, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(x * amount) / Math.tanh(amount); }
+  ws.curve = c; ws.oversample = '2x'; return ws;
+}
+// Air horn: the sound-system horn, a chord of buzzy reeds driven hard and shaped like a brass bell: "bap, bap, bap, baaaap"
 function fxHornAt(t0) {
-  const out = ctx.createGain(), f = ctx.createBiquadFilter();
-  out.gain.value = 0.12; f.type = 'lowpass'; f.frequency.value = 2600; f.Q.value = 3; f.connect(out); out.connect(masterBus);
-  for (const [o, len] of [[0, 0.12], [0.17, 0.12], [0.34, 0.12], [0.52, 0.6]]) {
+  const drive = grit(3), body = ctx.createBiquadFilter(), bell = ctx.createBiquadFilter(), lp = ctx.createBiquadFilter(), out = ctx.createGain();
+  body.type = 'peaking'; body.frequency.value = 1100; body.Q.value = 1.2; body.gain.value = 8;
+  bell.type = 'peaking'; bell.frequency.value = 2600; bell.Q.value = 2; bell.gain.value = 5;
+  lp.type = 'lowpass'; lp.frequency.value = 5200; lp.Q.value = 0.7;
+  out.gain.value = 0.09;
+  drive.connect(body); body.connect(bell); bell.connect(lp); lp.connect(out); out.connect(fxBus);
+  for (const [o, len] of [[0, 0.13], [0.18, 0.13], [0.36, 0.13], [0.55, 0.75]]) {
     const t = t0 + o, g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.012); g.gain.setValueAtTime(1, t + len - 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
-    g.connect(f);
-    for (const [fr, type, det] of [[466, 'sawtooth', -8], [466, 'sawtooth', 9], [932, 'square', 0], [233, 'sawtooth', 4]]) {
-      const os = ctx.createOscillator(); os.type = type; os.detune.value = det;
-      os.frequency.setValueAtTime(fr * 0.92, t); os.frequency.exponentialRampToValueAtTime(fr, t + 0.04);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.008); g.gain.setValueAtTime(1, t + len - 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    g.connect(drive);
+    for (const [fr, det] of [[440, -6], [440, 7], [554, 3], [659, -4]]) {
+      const os = ctx.createOscillator(); os.type = 'sawtooth'; os.detune.value = det;
+      os.frequency.setValueAtTime(fr * 0.94, t); os.frequency.exponentialRampToValueAtTime(fr, t + 0.025);
+      if (len > 0.5) { os.frequency.setValueAtTime(fr, t + len - 0.12); os.frequency.exponentialRampToValueAtTime(fr * 0.97, t + len); }   // the last blast sags as the air runs out
       os.connect(g); os.start(t); os.stop(t + len + 0.02);
     }
   }
@@ -1309,14 +1330,14 @@ function fxRiserAt(t, d) {
   s.buffer = liveNoise; s.loop = true; bp.type = 'bandpass'; bp.Q.value = 4;
   bp.frequency.setValueAtTime(250, t); bp.frequency.exponentialRampToValueAtTime(9000, t + d);
   g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.3, t + d); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.08);
-  s.connect(bp); bp.connect(g); g.connect(masterBus); s.start(t); s.stop(t + d + 0.1);
+  s.connect(bp); bp.connect(g); g.connect(fxBus); s.start(t); s.stop(t + d + 0.1);
 }
 function fxLaserAt(t0) {
   for (const o of [0, 0.13, 0.26]) {
     const t = t0 + o, os = ctx.createOscillator(), g = ctx.createGain();
     os.type = 'square'; os.frequency.setValueAtTime(2400, t); os.frequency.exponentialRampToValueAtTime(140, t + 0.22);
     g.gain.setValueAtTime(0.06, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
-    os.connect(g); g.connect(masterBus); os.start(t); os.stop(t + 0.25);
+    os.connect(g); g.connect(fxBus); os.start(t); os.stop(t + 0.25);
   }
 }
 $('#fxHorn').addEventListener('click', () => { resume(); fxHornAt(ctx.currentTime + 0.01); });
@@ -1335,8 +1356,8 @@ function fxSirenAt(t0, d = 2.4) {
   g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.05);
   g.gain.setValueAtTime(0.07, t0 + d - 0.12); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
   dly.delayTime.value = 0.3; fb.gain.value = 0.4; wet.gain.value = 0.5;
-  os.connect(f); os2.connect(f); f.connect(g); g.connect(masterBus);
-  g.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(masterBus);
+  os.connect(f); os2.connect(f); f.connect(g); g.connect(fxBus);
+  g.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(fxBus);
   for (const o of [os, os2, lfo]) { o.start(t0); o.stop(t0 + d + 0.05); }
   setTimeout(() => { try { wet.disconnect(); } catch (e) {} }, (t0 - ctx.currentTime + d + 3) * 1000);
 }
@@ -1346,7 +1367,7 @@ $('#fxSiren').addEventListener('click', () => { resume(); fxSirenAt(ctx.currentT
 function fxTail(node, time = 0.22, fbAmt = 0.35, wetAmt = 0.35, life = 3) {
   const dly = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
   dly.delayTime.value = time; fb.gain.value = fbAmt; wet.gain.value = wetAmt;
-  node.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(masterBus);
+  node.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(fxBus);
   setTimeout(() => { try { wet.disconnect(); fb.disconnect(); } catch (e) {} }, life * 1000);
 }
 function noiseBurst(t, dur, peak, type, freqFrom, freqTo, dest) {
@@ -1361,25 +1382,27 @@ function thump(t, dur, peak, from, to, dest) {
   g.gain.setValueAtTime(peak, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.02);
 }
-// Gunshot: a sharp crack with a low punch, three in a row, ringing out
+// Gunshot: a sharp crack, a blast and a punch in the chest, three in a row, ringing out round the room
 function fxGunAt(t0, shots = 3) {
-  const bus = ctx.createGain(); bus.gain.value = 0.9; bus.connect(masterBus); fxTail(bus, 0.19, 0.4, 0.4);
+  const bus = ctx.createGain(), drive = grit(4); bus.gain.value = 0.8; drive.connect(bus); bus.connect(fxBus); fxTail(bus, 0.21, 0.3, 0.25);
   for (let i = 0; i < shots; i++) {
-    const t = t0 + i * 0.3;
-    noiseBurst(t, 0.28, 0.55, 'lowpass', 7000, 600, bus);
-    thump(t, 0.18, 0.5, 160, 45, bus);
+    const t = t0 + i * 0.32;
+    noiseBurst(t, 0.012, 0.9, 'highpass', 3000, 2500, drive);
+    noiseBurst(t, 0.35, 0.6, 'lowpass', 5000, 400, drive);
+    thump(t, 0.22, 0.7, 200, 40, drive);
   }
 }
-// Bomb: a falling whistle, then a deep explosion
+// Bomb: a falling whistle, then a deep, gritty explosion
 function fxBombAt(t0) {
-  const bus = ctx.createGain(); bus.gain.value = 0.9; bus.connect(masterBus);
+  const bus = ctx.createGain(), drive = grit(2); bus.gain.value = 0.9; drive.connect(bus); bus.connect(fxBus);
   const o = ctx.createOscillator(), g = ctx.createGain();
   o.frequency.setValueAtTime(2200, t0); o.frequency.exponentialRampToValueAtTime(380, t0 + 1.2);
   g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.05, t0 + 0.2); g.gain.setValueAtTime(0.05, t0 + 1.1); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.22);
   o.connect(g); g.connect(bus); o.start(t0); o.stop(t0 + 1.25);
   const tb = t0 + 1.2;
-  noiseBurst(tb, 2.2, 0.6, 'lowpass', 1400, 60, bus);
-  thump(tb, 1.6, 0.8, 90, 22, bus);
+  noiseBurst(tb, 0.05, 0.8, 'highpass', 2500, 1500, drive);
+  noiseBurst(tb, 2.6, 0.6, 'lowpass', 1600, 50, drive);
+  thump(tb, 1.8, 0.85, 95, 20, drive);
   fxTail(bus, 0.33, 0.3, 0.3, 5);
 }
 // Whistle: short, short, long, with a fast warble
@@ -1389,7 +1412,7 @@ function fxWhistleAt(t0) {
     os.frequency.value = 2900; lfo.frequency.value = 28; dep.gain.value = 90;
     lfo.connect(dep); dep.connect(os.frequency);
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.01); g.gain.setValueAtTime(0.06, t + len - 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
-    os.connect(g); g.connect(masterBus);
+    os.connect(g); g.connect(fxBus);
     for (const x of [os, lfo]) { x.start(t); x.stop(t + len + 0.02); }
   }
 }
@@ -1467,7 +1490,9 @@ padIn.addEventListener('change', async () => {
 padAdd.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); padIn.click(); } });
 
 /* ---------- crate ---------- */
-const crate = TRACKS.map(t => ({ ...t, loops: true, grid: true, offset: 0, buffer: null, peaks: null }));
+// no reggaeton or dubstep anywhere in the booth
+const NOT_WANTED = /reggaet|latin|dembow|perreo|bachata|cumbia|salsa|dubstep|riddim dubstep|brostep/i;
+const crate = TRACKS.filter(t => !NOT_WANTED.test(t.genre)).map(t => ({ ...t, loops: true, grid: true, offset: 0, buffer: null, peaks: null }));
 const crateEl = $('#crate');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function renderCrate() {
@@ -1530,8 +1555,7 @@ async function loadFile(deck, file) {
 const AUDIUS = 'https://api.audius.co/v1', APP = 'twin-deck-booth';
 // Audius's Dancehall, Reggae and Latin lists are mostly unknown and Spanish-language uploads, not Jamaican artists,
 // so they're left out; Jamaican music comes from your own songs ("Dancehall & Reggae (Jamaica)").
-const AUD_GENRES = ['Electronic', 'House', 'Deep House', 'Tech House', 'Techno', 'Trance', 'Drum & Bass', 'Dubstep', 'Hip-Hop/Rap', 'Trap',
-  'R&B/Soul', 'Pop', 'Disco', 'Lo-Fi', 'Alternative', 'Rock'];
+const AUD_GENRES = ['Hip-Hop/Rap', 'R&B/Soul', 'Pop', 'Electronic', 'House', 'Disco', 'Lo-Fi', 'Alternative', 'Rock'];
 const audById = new Map();
 // Camelot wheel numbers indexed by pitch class (C = 0)
 const MINOR_CAM = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10], MAJOR_CAM = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1];
@@ -1564,7 +1588,7 @@ async function audFetch(path) {
   const j = await r.json();
   // no Latin music: its genre lists on Audius were mixing Spanish-language tracks into the set
   return (j.data || []).filter(t => t && t.id && t.is_streamable !== false && t.duration >= 60 && t.duration <= 720
-    && !/latin|reggaet|dembow|perreo|bachata|cumbia|salsa/i.test(`${t.genre} ${t.mood || ''} ${t.title}`)).map(audEntry);
+    && !NOT_WANTED.test(`${t.genre} ${t.mood || ''} ${t.title}`)).map(audEntry);
 }
 const audTrending = g => audFetch(`/tracks/trending?time=week&limit=50${g ? '&genre=' + encodeURIComponent(g) : ''}`);
 function decodeBuf(ab) { return new Promise((res, rej) => { const p = ctx.decodeAudioData(ab, res, rej); if (p && p.catch) p.catch(rej); }); }
