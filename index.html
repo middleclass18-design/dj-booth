@@ -1528,8 +1528,10 @@ async function loadFile(deck, file) {
 
 /* ---------- Audius streaming ---------- */
 const AUDIUS = 'https://api.audius.co/v1', APP = 'twin-deck-booth';
+// Audius's Dancehall, Reggae and Latin lists are mostly unknown and Spanish-language uploads, not Jamaican artists,
+// so they're left out; Jamaican music comes from your own songs ("Dancehall & Reggae (Jamaica)").
 const AUD_GENRES = ['Electronic', 'House', 'Deep House', 'Tech House', 'Techno', 'Trance', 'Drum & Bass', 'Dubstep', 'Hip-Hop/Rap', 'Trap',
-  'R&B/Soul', 'Pop', 'Latin', 'Dancehall', 'Reggae', 'Disco', 'Lo-Fi', 'Alternative', 'Rock'];
+  'R&B/Soul', 'Pop', 'Disco', 'Lo-Fi', 'Alternative', 'Rock'];
 const audById = new Map();
 // Camelot wheel numbers indexed by pitch class (C = 0)
 const MINOR_CAM = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10], MAJOR_CAM = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1];
@@ -1560,7 +1562,9 @@ async function audFetch(path) {
   const r = await fetch(`${AUDIUS}${path}${path.includes('?') ? '&' : '?'}app_name=${APP}`);
   if (!r.ok) throw new Error('Audius ' + r.status);
   const j = await r.json();
-  return (j.data || []).filter(t => t && t.id && t.is_streamable !== false && t.duration >= 60 && t.duration <= 720).map(audEntry);
+  // no Latin music: its genre lists on Audius were mixing Spanish-language tracks into the set
+  return (j.data || []).filter(t => t && t.id && t.is_streamable !== false && t.duration >= 60 && t.duration <= 720
+    && !/latin|reggaet|dembow|perreo|bachata|cumbia|salsa/i.test(`${t.genre} ${t.mood || ''} ${t.title}`)).map(audEntry);
 }
 const audTrending = g => audFetch(`/tracks/trending?time=week&limit=50${g ? '&genre=' + encodeURIComponent(g) : ''}`);
 function decodeBuf(ab) { return new Promise((res, rej) => { const p = ctx.decodeAudioData(ab, res, rej); if (p && p.catch) p.catch(rej); }); }
@@ -1708,7 +1712,9 @@ function candidates() {
   const g = A.genre;
   const pick = t => g === 'all' || (g === 'jam' ? /^(Dancehall|Reggae)$/.test(t.genre) : g === 'era:old' ? t.era === 'Old school' : g === 'era:new' ? t.era === 'New' : t.genre === g);
   const pool = crate.filter(t => isReady(t) && !t.failed && pick(t));
-  // once there are real songs to play, the built-in practice loops stay out of the set
+  // once you've added your own songs, the built-in practice loops (one of them is reggaeton) never play,
+  // even while your songs are still being read
+  if (crate.some(t => t.file)) return pool.filter(t => !t.loops);
   const songs = pool.filter(t => !t.loops);
   return songs.length >= 2 ? songs : pool;
 }
@@ -2071,7 +2077,8 @@ async function setAuto(on) {
   }
   const ready = candidates();
   if (!ready.length) {
-    toast(isAudiusSource() ? 'Audius has no songs for that genre right now. Pick another.' : 'The loops are still being made. Try again in a moment.');
+    toast(isAudiusSource() ? 'Audius has no songs for that genre right now. Pick another.'
+      : crate.some(t => t.file) ? 'Your songs are still being read. Try again in a moment.' : 'The loops are still being made. Try again in a moment.');
     renderAuto(); return;
   }
   Object.assign(A, { on: true, setStart: ctx.currentTime, history: [], recent: [], fxNote: null, launched: false, next: null, plan: null, lastFxBar: -1 });
