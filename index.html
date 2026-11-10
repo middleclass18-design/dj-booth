@@ -167,6 +167,8 @@ canvas.platter:active{cursor:grabbing}
 .mc-shout:focus-visible{outline:2px solid var(--fx);outline-offset:2px}
 #mcBtn{--c:var(--fx)}
 .mc-say{display:block;font-style:italic;color:var(--fx);margin-top:2px}
+.mc-status{font-size:12px;color:var(--muted);flex-basis:100%}
+.mc-status:empty{display:none}
 .load .btn[data-act="next"]{--c:var(--fx)}
 #autoFx{--c:var(--fx)}
 select{font-family:var(--body);font-size:13px;color:var(--fg);background:var(--raised);border:1px solid var(--line);border-radius:7px;padding:7px 10px}
@@ -257,11 +259,12 @@ kbd{font-family:var(--mono);font-size:11.5px;color:var(--fg);background:var(--ra
       <label class="lbl" for="mcOften">Talks</label>
       <select id="mcOften"><option value="1">Every song</option><option value="0.65">Most songs</option><option value="0.35">Now and then</option></select>
       <label class="lbl" for="mcVoice">Voice</label>
-      <select id="mcVoice"><option value="">Best available</option></select>
+      <select id="mcVoice"></select>
       <input id="mcShout" class="mc-shout" type="text" maxlength="80" placeholder="Shout-out, e.g. Kaison, happy 1st birthday" aria-label="Shout-out the DJ says now and then">
       <button class="btn sm" id="mcTest">Hear it</button>
       <label class="lbl" for="autoLen">Songs</label>
       <select id="autoLen"><option value="1">DJ length</option><option value="1.8">Play longer</option><option value="99">Whole song</option></select>
+      <span class="mc-status" id="mcStatus" aria-live="polite"></span>
     </div>
     <ol class="auto-log" id="autoLog" aria-label="Transitions so far"></ol>
   </section>
@@ -1820,6 +1823,8 @@ audRes.addEventListener('click', e => {
 const synth = window.speechSynthesis || null;
 const MC = { on: true, often: 1, shout: '', voiceName: '', last: [], speaking: false, line: '', lineUntil: 0 };
 try { const s = JSON.parse(localStorage.getItem('tdb-mc') || '{}'); Object.assign(MC, { on: s.on !== false, often: +s.often || 1, shout: s.shout || '', voiceName: s.voiceName || '' }); } catch (e) {}
+// voice choice: 'k:<name>' is a real (AI) voice, 'p:<name>' a phone voice ('p:' alone = best phone voice)
+if (!/^[kp]:/.test(MC.voiceName)) MC.voiceName = 'k:am_michael';
 function mcSave() { try { localStorage.setItem('tdb-mc', JSON.stringify({ on: MC.on, often: MC.often, shout: MC.shout, voiceName: MC.voiceName })); } catch (e) {} }
 const pickOne = a => a[Math.floor(Math.random() * a.length)];
 // "03 - Murder She Wrote (Remastered).flac" -> "Murder She Wrote"
@@ -1882,7 +1887,8 @@ function mcLine(t, prev, opening) {
 function mcVoice() {
   if (!synth) return null;
   const vs = synth.getVoices().filter(v => /^en/i.test(v.lang));
-  if (MC.voiceName) { const v = vs.find(v => v.name === MC.voiceName); if (v) return v; }
+  const want = MC.voiceName.startsWith('p:') ? MC.voiceName.slice(2) : '';
+  if (want) { const v = vs.find(v => v.name === want); if (v) return v; }
   // a Jamaican or Caribbean English voice if the phone has one, then natural-sounding UK or US voices
   const rank = v => (/en-JM/i.test(v.lang) ? 50 : 0) + (/natural|neural|premium|enhanced/i.test(v.name) ? 20 : 0) + (/google/i.test(v.name) ? 8 : 0)
     + (/male|daniel|guy|ryan|thomas|aaron|arthur|fred/i.test(v.name) && !/female/i.test(v.name) ? 6 : 0) + (/en-GB/i.test(v.lang) ? 4 : /en-US/i.test(v.lang) ? 3 : 0) + (v.localService ? 1 : 0);
@@ -1909,8 +1915,122 @@ function mcSay(text) {
 }
 // phones only allow speech after a tap, so the Auto DJ and Hear it buttons wake the voice up
 function mcUnlock() { if (!synth) return; try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); } catch (e) {} }
-function mcStop() { if (synth) synth.cancel(); if (MC.speaking) { MC.speaking = false; masterBus.gain.setTargetAtTime(0.75, ctx.currentTime, 0.2); } }
+function mcStop() {
+  if (synth) synth.cancel();
+  if (MC.realSrc) { try { MC.realSrc.stop(); } catch (e) {} MC.realSrc = null; }
+  MC.speaking = false; masterBus.gain.cancelScheduledValues(ctx.currentTime); masterBus.gain.setTargetAtTime(0.75, ctx.currentTime, 0.2);
+}
 const speakLen = s => 0.8 + s.split(/\s+/).length * 0.37;   // rough seconds it takes to say a line
+
+/* ---------- real (AI) voice ----------
+   Kokoro, a free open text-to-speech model, runs right on the phone in a background worker, so it never makes the
+   music stutter. It downloads once (about 90 MB) and the browser keeps it. The voice it makes is real audio, so it
+   goes through the booth like a DJ mic: it plays in the background, and gets a mic tone and a short echo. */
+const KOKORO_URL = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js';
+const REAL_VOICES = [['am_michael', 'Michael (man, US)'], ['am_fenrir', 'Fenrir (man, deep)'], ['am_puck', 'Puck (man, hype)'], ['am_eric', 'Eric (man, US)'],
+  ['bm_george', 'George (man, UK)'], ['bm_daniel', 'Daniel (man, UK)'], ['af_heart', 'Heart (woman, US)'], ['af_bella', 'Bella (woman, US)'], ['bf_emma', 'Emma (woman, UK)']];
+const VOICE_WORKER = `
+import { KokoroTTS } from '${KOKORO_URL}';
+let loading = null, chain = Promise.resolve();
+function load() {
+  if (!loading) {
+    const seen = {};
+    loading = KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'q8', device: 'wasm',
+      progress_callback: p => {
+        if (p.status !== 'progress' || !p.total) return;
+        seen[p.file] = [p.loaded, p.total];
+        let a = 0, b = 0; for (const k in seen) { a += seen[k][0]; b += seen[k][1]; }
+        postMessage({ type: 'progress', pct: Math.floor(100 * a / b) });
+      } })
+      .then(t => { postMessage({ type: 'ready' }); return t; })
+      .catch(err => { loading = null; throw err; });
+  }
+  return loading;
+}
+onmessage = async e => {
+  const m = e.data;
+  try {
+    if (m.type === 'load') { await load(); return; }
+    // one line at a time: the model can't record two at once
+    const job = chain.then(async () => { const tts = await load(); return tts.generate(m.text, { voice: m.voice, speed: m.speed || 1 }); });
+    chain = job.catch(() => {});
+    const out = await job, pcm = out.audio;
+    postMessage({ type: 'audio', id: m.id, pcm, rate: out.sampling_rate }, [pcm.buffer]);
+  } catch (err) { postMessage({ type: 'error', id: m.id, msg: String((err && err.message) || err) }); }
+};`;
+const RV = { worker: null, state: 'off', pct: 0, n: 0, waits: new Map() };
+function rvFail(msg) {
+  RV.state = 'failed'; mcStatusShow();
+  for (const w of RV.waits.values()) w.rej(new Error(msg)); RV.waits.clear();
+}
+function rvStart() {
+  if (RV.worker || RV.state === 'failed') return;
+  try {
+    RV.worker = new Worker(URL.createObjectURL(new Blob([VOICE_WORKER], { type: 'text/javascript' })), { type: 'module' });
+  } catch (e) { rvFail('no worker'); return; }
+  RV.state = 'loading'; RV.pct = 0; mcStatusShow();
+  RV.worker.onmessage = e => {
+    const m = e.data;
+    if (m.type === 'progress') { RV.pct = m.pct; mcStatusShow(); }
+    else if (m.type === 'ready') { RV.state = 'ready'; mcStatusShow(); }
+    else if (m.type === 'audio' || m.type === 'error') {
+      const w = RV.waits.get(m.id); if (!w) return; RV.waits.delete(m.id);
+      if (m.type === 'error') { w.rej(new Error(m.msg)); if (RV.state === 'loading') rvFail(m.msg); return; }
+      const b = ctx.createBuffer(1, m.pcm.length, m.rate); b.copyToChannel(m.pcm, 0); w.res(b);
+    }
+  };
+  RV.worker.onerror = () => rvFail('worker error');
+  RV.worker.postMessage({ type: 'load' });
+}
+const realVoiceOn = () => MC.voiceName.startsWith('k:') && RV.state !== 'failed' && typeof Worker !== 'undefined';
+// turns a line of text into a recording; resolves with an AudioBuffer
+function rvSynth(text) {
+  rvStart();
+  if (RV.state === 'failed') return Promise.reject(new Error('real voice unavailable'));
+  const id = ++RV.n;
+  return new Promise((res, rej) => {
+    RV.waits.set(id, { res, rej });
+    RV.worker.postMessage({ type: 'say', id, text, voice: MC.voiceName.slice(2), speed: 1.06 });
+  });
+}
+// DJ mic: cut the rumble, lift the presence, squeeze it, short slapback echo. It joins after the music's dip, so it stays loud.
+const micIn = ctx.createGain(), micHp = ctx.createBiquadFilter(), micPres = ctx.createBiquadFilter(), micComp = ctx.createDynamicsCompressor(), micOut = ctx.createGain();
+micHp.type = 'highpass'; micHp.frequency.value = 110;
+micPres.type = 'peaking'; micPres.frequency.value = 3200; micPres.Q.value = 0.9; micPres.gain.value = 4;
+micComp.threshold.value = -22; micComp.ratio.value = 4; micComp.attack.value = 0.004; micComp.release.value = 0.18;
+micOut.gain.value = 1.15;
+micIn.connect(micHp); micHp.connect(micPres); micPres.connect(micComp); micComp.connect(micOut); micOut.connect(limiter);
+const micSlap = ctx.createDelay(1), micFb = ctx.createGain(), micWet = ctx.createGain();
+micSlap.delayTime.value = 0.19; micFb.gain.value = 0.24; micWet.gain.value = 0.17;
+micOut.connect(micSlap); micSlap.connect(micFb); micFb.connect(micSlap); micSlap.connect(micWet); micWet.connect(limiter);
+// plays a recorded line at time `when`, dipping the music under it
+function mcPlay(buf, when, text) {
+  if (!buf) return;
+  when = Math.max(when, ctx.currentTime + 0.05);
+  const src = ctx.createBufferSource(); src.buffer = buf; src.connect(micIn); src.start(when);
+  const g = masterBus.gain, end = when + buf.duration;
+  g.cancelScheduledValues(ctx.currentTime); g.setValueAtTime(g.value, ctx.currentTime);
+  g.setTargetAtTime(0.75 * DUCK, when - 0.25, 0.08); g.setTargetAtTime(0.75, end + 0.05, 0.3);
+  MC.speaking = true; MC.realSrc = src;
+  src.onended = () => { if (MC.realSrc === src) { MC.speaking = false; MC.realSrc = null; } };
+  const wait = Math.max(0, (when - ctx.currentTime) * 1000);
+  setTimeout(() => { MC.line = text || ''; MC.lineUntil = performance.now() + (buf.duration + 1.5) * 1000; renderAuto(); }, wait);
+  setTimeout(renderAuto, wait + (buf.duration + 1.6) * 1000);
+}
+// says a line now in whichever voice is picked (used for the welcome and Hear it)
+function mcSpeakNow(text, stillWanted = () => true, maxWait = 25) {
+  if (!realVoiceOn()) return mcSay(text);
+  const asked = performance.now();
+  rvSynth(text).then(b => { if (stillWanted() && performance.now() - asked < maxWait * 1000) mcPlay(b, ctx.currentTime + 0.05, text); })
+    .catch(() => { if (stillWanted()) mcSay(text); });
+}
+function mcStatusShow() {
+  const el = document.getElementById('mcStatus'); if (!el) return;
+  el.textContent = !MC.voiceName.startsWith('k:') ? ''
+    : RV.state === 'loading' ? (RV.pct > 0 && RV.pct < 100 ? `Downloading real voice ${RV.pct}%` : 'Getting real voice ready…')
+    : RV.state === 'ready' ? 'Real voice ready'
+    : RV.state === 'failed' ? 'Real voice could not load here, using the phone voice' : 'Real voice downloads about 90 MB the first time';
+}
 
 /* ---------- auto DJ ---------- */
 // How each genre likes to be mixed: 'four' = four-on-the-floor, long blends are safe
@@ -2220,19 +2340,36 @@ function autoStep() {
 // The DJ talks just before the next song comes in, timed so the line ends about as the song drops
 function mcMaybe(cur) {
   const t = A.next && A.next.track;
-  if (!MC.on || !synth || !t || A.launched || A.mcFor === t) return;
-  if (A.mcRollFor !== t) { A.mcRollFor = t; A.mcSkip = Math.random() > MC.often; A.mcText = mcLine(t, cur.track, false); }
+  if (!MC.on || !t || A.launched || A.mcFor === t) return;
+  if (A.mcRollFor !== t) {
+    A.mcRollFor = t; A.mcSkip = Math.random() > MC.often; A.mcText = mcLine(t, cur.track, false); A.mcAudio = null; A.mcPending = null;
+    // the real voice is recorded ahead of time, while the current song plays
+    if (!A.mcSkip && realVoiceOn()) A.mcPending = rvSynth(A.mcText).then(b => { if (A.mcRollFor === t) A.mcAudio = b; return b; }).catch(() => { if (A.mcRollFor === t) A.mcPending = null; return null; });
+  }
   if (A.mcSkip) { A.mcFor = t; return; }
+  if (A.mcPending) {
+    if (!A.mcAudio) return;   // still recording; if it isn't ready in time, it plays over the new song's intro
+    const drop = timeOfBar(cur, A.target), start = drop - A.mcAudio.duration - 0.2;
+    if (start - ctx.currentTime <= 0.35 && start > ctx.currentTime - 0.3) { A.mcFor = t; mcPlay(A.mcAudio, start, A.mcText); }
+    return;
+  }
+  if (!synth) return;
   const secs = timeOfBar(cur, A.target - preBars(A.plan)) - ctx.currentTime;
   if (secs <= speakLen(A.mcText) + 1 && secs > 0.8) { A.mcFor = t; mcSay(A.mcText); }
 }
 // if there was no time to talk before the mix (say after Mix now), the DJ talks over the new song's intro instead
 function mcLate(out, inn, tT) {
   const t = inn.track;
-  if (!MC.on || !synth || A.mcFor === t || (A.mcRollFor === t && A.mcSkip)) return;
+  if (!MC.on || A.mcFor === t || (A.mcRollFor === t && A.mcSkip)) return;
   A.mcFor = t;
   const text = A.mcRollFor === t ? A.mcText : mcLine(t, out.track, false);
-  schedule(tT + 0.4, () => mcSay(text));
+  if (A.mcRollFor === t && A.mcPending) {
+    const p = A.mcPending, give = tT + 20;
+    p.then(b => { if (b && A.on && A.cur && A.cur.track === t && ctx.currentTime < give) mcPlay(b, Math.max(tT + 0.4, ctx.currentTime + 0.05), text); });
+    return;
+  }
+  if (realVoiceOn()) { mcSpeakNow(text, () => A.on && A.cur && A.cur.track === t, 20); return; }
+  if (synth) schedule(tT + 0.4, () => mcSay(text));
 }
 function tick() {
   const now = ctx.currentTime;
@@ -2289,7 +2426,7 @@ async function setAuto(on) {
   if (cur.other.playing) cur.other.pause();
   A.cur = cur; A.recent.push(cur.track); A.played.add(cur.track);
   A.curStart = cur.track.loops ? Math.floor(barsOf(cur) / 8) * 8 : Math.floor(barsOf(cur));
-  if (MC.on) { A.mcFor = cur.track; const tr = cur.track; setTimeout(() => { if (A.on && A.cur && A.cur.track === tr) mcSay(mcLine(tr, null, true)); }, 700); }
+  if (MC.on) { A.mcFor = cur.track; const tr = cur.track; const still = () => A.on && A.cur && A.cur.track === tr; setTimeout(() => { if (still()) mcSpeakNow(mcLine(tr, null, true), still, 45); }, 700); }
   prepareNext(); renderAuto();
 }
 function renderAuto() {
@@ -2298,7 +2435,7 @@ function renderAuto() {
   autoMix.disabled = !(A.on && A.next && !A.launched);
   if (!A.on || !A.cur || !A.cur.track) {
     autoNow.innerHTML = A.starting ? 'Starting the Auto DJ…' : 'Off. Turn on <b>Auto DJ</b> and it picks the next track by key and tempo, matches the beat, mixes it in, and adds sound effects.';
-    autoNext.textContent = '';
+    autoNext.innerHTML = MC.line && performance.now() < MC.lineUntil ? `<span class="mc-say">🎤 “${esc(MC.line)}”</span>` : '';
   } else {
     const c = A.cur.track;
     autoNow.innerHTML = `Now playing <b>${esc(c.title)}</b> · ${esc(c.genre)} · deck ${A.cur.id} · set time ${fmtShort(ctx.currentTime - A.setStart)}`;
@@ -2334,22 +2471,29 @@ function populateGenres() {
     + AUD_GENRES.map(g => `<option value="audius:${esc(g)}">${esc(g)}</option>`).join('') + '</optgroup>';
   autoGenre.value = [...autoGenre.options].some(o => o.value === v) ? v : 'all';
 }
-autoBtn.addEventListener('click', () => { if (!A.on) mcUnlock(); setAuto(!A.on); });
+autoBtn.addEventListener('click', () => { if (!A.on) { mcUnlock(); if (MC.on && realVoiceOn()) rvStart(); } setAuto(!A.on); });
 // DJ voice controls
 const mcBtn = $('#mcBtn'), mcOften = $('#mcOften'), mcVoiceSel = $('#mcVoice'), mcShout = $('#mcShout'), autoLen = $('#autoLen');
 mcBtn.setAttribute('aria-pressed', String(MC.on)); mcOften.value = String(MC.often); mcShout.value = MC.shout; autoLen.value = String(A.len);
-if (!synth) { mcBtn.disabled = true; mcBtn.title = 'This browser has no text-to-speech voice'; MC.on = false; mcBtn.setAttribute('aria-pressed', 'false'); }
+if (!synth && typeof Worker === 'undefined') { mcBtn.disabled = true; mcBtn.title = 'This browser cannot make a voice'; MC.on = false; mcBtn.setAttribute('aria-pressed', 'false'); }
 function fillVoices() {
-  if (!synth) return;
-  const vs = synth.getVoices().filter(v => /^en/i.test(v.lang));
+  const vs = synth ? synth.getVoices().filter(v => /^en/i.test(v.lang)) : [];
   const key = vs.map(v => v.name).join('|'); if (mcVoiceSel.dataset.key === key) return; mcVoiceSel.dataset.key = key;
-  mcVoiceSel.innerHTML = '<option value="">Best available</option>' + vs.map(v => `<option value="${esc(v.name)}">${esc(v.name.replace(/^(Microsoft|Google)\s+/, ''))} (${esc(v.lang)})</option>`).join('');
-  mcVoiceSel.value = vs.some(v => v.name === MC.voiceName) ? MC.voiceName : '';
+  mcVoiceSel.innerHTML = '<optgroup label="Real voice (free AI, sounds like a person)">'
+    + REAL_VOICES.map(([id, label]) => `<option value="k:${id}">${esc(label)}</option>`).join('') + '</optgroup>'
+    + (synth ? '<optgroup label="Phone voice (robotic, no download)"><option value="p:">Best phone voice</option>'
+      + vs.map(v => `<option value="p:${esc(v.name)}">${esc(v.name.replace(/^(Microsoft|Google)\s+/, ''))} (${esc(v.lang)})</option>`).join('') + '</optgroup>' : '');
+  mcVoiceSel.value = [...mcVoiceSel.options].some(o => o.value === MC.voiceName) ? MC.voiceName : 'k:am_michael';
 }
-if (synth) { fillVoices(); synth.addEventListener ? synth.addEventListener('voiceschanged', fillVoices) : (synth.onvoiceschanged = fillVoices); }
+fillVoices(); mcStatusShow();
+if (synth) synth.addEventListener ? synth.addEventListener('voiceschanged', fillVoices) : (synth.onvoiceschanged = fillVoices);
 mcBtn.addEventListener('click', () => { MC.on = !MC.on; mcBtn.setAttribute('aria-pressed', String(MC.on)); if (!MC.on) mcStop(); else mcUnlock(); mcSave(); });
 mcOften.addEventListener('change', () => { MC.often = +mcOften.value || 1; mcSave(); });
-mcVoiceSel.addEventListener('change', () => { MC.voiceName = mcVoiceSel.value; mcSave(); });
+mcVoiceSel.addEventListener('change', () => {
+  MC.voiceName = mcVoiceSel.value; mcSave(); mcStatusShow();
+  if (MC.voiceName.startsWith('k:')) rvStart();
+  A.mcRollFor = null;   // the next intro gets recorded again in the new voice
+});
 mcShout.addEventListener('input', () => { MC.shout = mcShout.value; mcSave(); });
 autoLen.addEventListener('change', () => {
   A.len = +autoLen.value || 1;
@@ -2360,7 +2504,7 @@ $('#mcTest').addEventListener('click', () => {
   resume(); mcUnlock();
   const songs = crate.filter(t => !t.loops && !t.failed);
   const t = (A.next && A.next.track) || pickOne(songs.length ? songs : crate);
-  mcSay(mcLine(t, A.cur && A.cur.track, false)); renderAuto();
+  mcSpeakNow(mcLine(t, A.cur && A.cur.track, false), () => true, 600); renderAuto();
   setTimeout(renderAuto, 50);
 });
 autoFx.addEventListener('click', () => { A.fx = !A.fx; autoFx.setAttribute('aria-pressed', String(A.fx)); });
